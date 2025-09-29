@@ -110,6 +110,15 @@ try {
         case 'admin_reset_client_key':
             adminResetClientKey($user_id, $role, $input['license_id']);
             break;
+        case 'admin_reset_all_licenses':
+            adminResetAllLicenses($user_id, $role);
+            break;
+        case 'admin_delete_all_licenses':
+            adminDeleteAllLicenses($user_id, $role);
+            break;
+        case 'admin_extend_all_licenses':
+            adminExtendAllLicenses($user_id, $role, (float)($input['extra_days'] ?? 0));
+            break;
         
         case 'load_system_keys':
             loadSystemKeys($role);
@@ -138,6 +147,9 @@ try {
             break;
         case 'owner_delete_all_licenses':
             ownerDeleteAllLicenses($user_id, $role);
+            break;
+        case 'owner_extend_all_licenses':
+            ownerExtendAllLicenses($user_id, $role, (float)($input['extra_days'] ?? 0));
             break;
             
         default:
@@ -178,7 +190,12 @@ function loadInitialData($user_id) {
     $keyData = $stmt->get_result()->fetch_assoc();
     $stmt->close();
     
-    $key_rate = 3.7; 
+    // Derive a rough key rate from recent activity (keys created in last 10 minutes)
+    $stmt = $conn->prepare("SELECT COUNT(*) AS c FROM licenses WHERE created_at >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)");
+    $stmt->execute();
+    $kr = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    $key_rate = round(($kr['c'] ?? 0) / 10, 2);
 
     $data = [
         'role' => $userData['role'],
@@ -779,6 +796,100 @@ function ownerDeleteAllLicenses($user_id, $role) {
     echo json_encode(['success' => true]);
     $conn->close();
 }
+
+/**
+ * Admin: reset all managed licenses (self + referred)
+ */
+function adminResetAllLicenses($user_id, $role) {
+    if (!checkRole($role, 'admin')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    if ($role === 'owner') {
+        $conn->query("UPDATE licenses SET devices_used = 0, linked_device_id = NULL");
+    } else {
+        // reset licenses created by admin or their referred users
+        $stmt = $conn->prepare("UPDATE licenses SET devices_used = 0, linked_device_id = NULL WHERE creator_id IN (SELECT user_id FROM users WHERE referred_by_id = ? UNION SELECT ?)");
+        $stmt->bind_param("ss", $user_id, $user_id);
+        $stmt->execute();
+    }
+    echo json_encode(['success' => true]);
+    $conn->close();
+}
+
+/**
+ * Admin: delete all managed licenses
+ */
+function adminDeleteAllLicenses($user_id, $role) {
+    if (!checkRole($role, 'admin')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    if ($role === 'owner') {
+        $conn->query("DELETE FROM licenses");
+    } else {
+        $stmt = $conn->prepare("DELETE FROM licenses WHERE creator_id IN (SELECT user_id FROM users WHERE referred_by_id = ? UNION SELECT ?)");
+        $stmt->bind_param("ss", $user_id, $user_id);
+        $stmt->execute();
+    }
+    echo json_encode(['success' => true]);
+    $conn->close();
+}
+
+/**
+ * Admin: extend all managed licenses by extra days
+ */
+function adminExtendAllLicenses($user_id, $role, $extra_days) {
+    if (!checkRole($role, 'admin')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin authorization required.']);
+        return;
+    }
+    if ($extra_days <= 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid extra_days.']);
+        return;
+    }
+    $conn = connectDB();
+    if ($role === 'owner') {
+        $stmt = $conn->prepare("UPDATE licenses SET expires = COALESCE(expires, NOW()) + INTERVAL ? DAY");
+        $stmt->bind_param("i", $extra_days);
+        $stmt->execute();
+    } else {
+        $stmt = $conn->prepare("UPDATE licenses SET expires = COALESCE(expires, NOW()) + INTERVAL ? DAY WHERE creator_id IN (SELECT user_id FROM users WHERE referred_by_id = ? UNION SELECT ?)");
+        $stmt->bind_param("iss", $extra_days, $user_id, $user_id);
+        $stmt->execute();
+    }
+    echo json_encode(['success' => true]);
+    $conn->close();
+}
+
+/**
+ * Owner: extend all licenses by extra days
+ */
+function ownerExtendAllLicenses($user_id, $role, $extra_days) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    if ($extra_days <= 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid extra_days.']);
+        return;
+    }
+    $conn = connectDB();
+    $stmt = $conn->prepare("UPDATE licenses SET expires = COALESCE(expires, NOW()) + INTERVAL ? DAY");
+    $stmt->bind_param("i", $extra_days);
+    $stmt->execute();
+    echo json_encode(['success' => true]);
+    $conn->close();
+}
+
 
 /**
  * Admin/Owner action to reset the device linkage on a client's key.

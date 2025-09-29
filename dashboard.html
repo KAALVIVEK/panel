@@ -210,6 +210,8 @@
                 window.userBalance = data.balance || 0.00;
                 window.userEmail = data.email || 'not-loaded@ztrax.com';
                 window.referredByStatus = data.referred_by_status || null;
+                if (document.getElementById('activeKeyCount')) { document.getElementById('activeKeyCount').textContent = data.active_keys ?? '0'; }
+                if (document.getElementById('keyRate')) { document.getElementById('keyRate').textContent = (data.key_rate ?? 0).toString(); }
 
                 window.renderApp();
                 if (window.dashboardView === 'licenses') displayRegisteredLicenses();
@@ -294,6 +296,16 @@
             if (!confirm('CRITICAL ACTION: Permanently DELETE ALL LICENSES? This cannot be undone.')) return;
             const ok = await fetchAPI('owner_delete_all_licenses');
             if (ok) { showMessage('All licenses deleted globally.', 'error'); displayRegisteredLicenses(); }
+        };
+
+        window.ownerExtendAllPrompt = async () => {
+            if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
+            const daysStr = prompt('Extend ALL licenses by how many days?', '1');
+            if (daysStr === null) return;
+            const extra = parseInt(daysStr, 10);
+            if (!(extra > 0)) { showMessage('Invalid days.', 'error'); return; }
+            const ok = await fetchAPI('owner_extend_all_licenses', { extra_days: extra });
+            if (ok) { showMessage('All licenses extended.', 'success'); displayRegisteredLicenses(); }
         };
 
         window.saveKeyChanges = async (docId) => {
@@ -969,15 +981,14 @@
                                 <div class="w-3 h-3 rounded-full bg-green-500 shadow-md shadow-green-500/50"></div>
                             </div>
                             <p class="text-3xl text-white mt-2 font-mono text-high-contrast">100% Operational</p>
-                            <p class="text-xs text-gray-500 mt-1 text-high-contrast">Status check: 0.04ms latency</p>
+                            <p class="text-xs text-gray-500 mt-1 text-high-contrast">Live key rate: <span id="keyRate" class="text-contrast-cyan">--</span>/min</p>
                         </div>
 
                         <div class="widget-card rounded-xl p-6">
                             <span class="text-sm font-medium text-gray-400 uppercase text-high-contrast">Active Key
                                 Count</span>
-                            <p class="text-3xl text-primary mt-2 font-mono text-high-contrast shadow-cyan"><span
-                                    id="activeKeyCount">---</span></p>
-                            <p class="text-xs text-gray-500 mt-1 text-high-contrast">User's private key count</p>
+                            <p class="text-3xl text-primary mt-2 font-mono text-high-contrast shadow-cyan"><span id="activeKeyCount">---</span></p>
+                            <p class="text-xs text-gray-500 mt-1 text-high-contrast">Active keys in your scope</p>
                         </div>
 
                         <div class="widget-card rounded-xl p-6">
@@ -1134,7 +1145,11 @@
                             <button onclick="globalExternalKeyWipe()"
                                 class="glowing-button w-full text-sm px-4 py-2 rounded-lg bg-red-700/80 hover:bg-red-700">
                                 <span class="text-high-contrast">OWNER: GLOBAL LICENSE WIPE</span>
-                            </button>` : `
+                            </button>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">
+                                <button onclick="ownerDeleteAllLicenses()" class="glowing-button text-sm px-4 py-2 rounded-lg bg-red-600/70">DELETE ALL LICENSES</button>
+                                <button onclick="ownerExtendAllPrompt()" class="glowing-button text-sm px-4 py-2 rounded-lg">EXTEND ALL LICENSES</button>
+                            </div>` : `
                             <p class="text-red-500 text-xs text-center">OWNER PERMISSION REQUIRED</p>
                             `}
                         </div>
