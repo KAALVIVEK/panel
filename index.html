@@ -304,6 +304,9 @@
                     if (result.success) {
                         localStorage.setItem('ztrax_user_id', result.user_id);
                         localStorage.setItem('ztrax_role', result.role);
+                        if (result.token) {
+                            localStorage.setItem('ztrax_token', result.token);
+                        }
                         
                         let message = `[STATUS: AUTH_SUCCESS] Access granted. Redirecting to console...`;
                         messageBox.textContent = message;
@@ -416,6 +419,11 @@
             const form = document.getElementById('authForm');
             if (form) form.reset();
             document.getElementById('messageBox').classList.add('hidden');
+
+            // Clear token when switching modes to avoid stale sessions
+            if (!isLogin) {
+                localStorage.removeItem('ztrax_token');
+            }
 
             if (typeof lucide !== 'undefined' && lucide.createIcons) {
                  lucide.createIcons();

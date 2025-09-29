@@ -3,6 +3,8 @@
 // ZTRAX DASHBOARD API - SECURE PHP BACKEND
 // =========================================================================
 
+require_once __DIR__ . '/config.php';
+
 // Set headers for CORS and JSON response
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
@@ -11,14 +13,12 @@ header("Content-Type: application/json; charset=UTF-8");
 
 // Handle preflight OPTIONS request
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(204);
     exit(0);
 }
 
 // --- 1. DATABASE CONFIGURATION (LIVE CREDENTIALS) ---
-define('DB_HOST', 'sql108.ezyro.com');
-define('DB_USER', 'ezyro_40038768');
-define('DB_PASS', '13579780');
-define('DB_NAME', 'ezyro_40038768_vivek');
+// DB config comes from config.php
 
 // --- 2. CORE UTILITIES ---
 
@@ -30,6 +30,7 @@ function connectDB() {
     if ($conn->connect_error) {
         throw new Exception("Database connection failed: " . $conn->connect_error);
     }
+    $conn->set_charset('utf8mb4');
     return $conn;
 }
 
@@ -57,8 +58,23 @@ if (!isset($input['action'])) {
 }
 
 $action = $input['action'];
-$user_id = $input['user_id'] ?? null;
-$role = $input['role'] ?? null;
+
+// Enforce Bearer token for all non-api_* actions
+$claims = null;
+try {
+    if (strpos($action, 'api_') !== 0) {
+        $authHeader = get_authorization_header();
+        $claims = verify_bearer_token_or_throw($authHeader);
+    }
+} catch (Exception $e) {
+    http_response_code(401);
+    echo json_encode(['success' => false, 'message' => 'Unauthorized: ' . $e->getMessage()]);
+    exit();
+}
+
+// Derive user and role from token if present; fall back to input only for api_* helpers
+$user_id = $claims['sub'] ?? ($input['user_id'] ?? null);
+$role = $claims['role'] ?? ($input['role'] ?? null);
 
 // --- 4. API ROUTING ---
 try {
@@ -255,12 +271,19 @@ function getLicenseFilterSQL($current_user_id, $current_role) {
         $stmt->bind_param("ss", $current_user_id, $current_user_id);
         $stmt->execute();
         $result = $stmt->get_result();
-        $managed_ids = [$current_user_id];
+        $managed_ids = [];
         while ($row = $result->fetch_assoc()) {
             $managed_ids[] = $row['user_id'];
         }
-        $in_clause = implode("','", $managed_ids);
-        return ["WHERE creator_id IN ('$in_clause')", []];
+        // Always include current admin id
+        if (!in_array($current_user_id, $managed_ids, true)) {
+            $managed_ids[] = $current_user_id;
+        }
+        if (count($managed_ids) === 0) {
+            return ['WHERE 1=0', []];
+        }
+        $placeholders = implode(',', array_fill(0, count($managed_ids), '?'));
+        return ["WHERE creator_id IN ($placeholders)", $managed_ids];
         
     } else {
         return ['WHERE creator_id = ?', [$current_user_id]];
@@ -292,7 +315,8 @@ function loadLicenses($user_id, $role) {
             if (!$stmt) {
                 throw new Exception("SQL Prepare failed: " . $conn->error);
             }
-            $stmt->bind_param(str_repeat('s', count($params)), ...$params);
+            $types = str_repeat('s', count($params));
+            $stmt->bind_param($types, ...$params);
             $stmt->execute();
             $result = $stmt->get_result();
             $stmt->close();

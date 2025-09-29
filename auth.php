@@ -6,17 +6,20 @@
 // to prevent SQL Injection and protect user credentials.
 // =========================================================================
 
-header("Content-Type: application/json; charset=UTF-8");
-header("Access-Control-Allow-Origin: *"); // Allow access from your frontend URL
-header("Access-Control-Allow-Methods: POST");
-header("Access-Control-Max-Age: 3600");
-header("Access-Control-Allow-Headers: Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With");
+require_once __DIR__ . '/config.php';
 
-// --- 1. Database Configuration (MUST BE UPDATED) ---
-define('DB_HOST', 'sql108.ezyro.com');
-define('DB_USER', 'ezyro_40038768');
-define('DB_PASS', '13579780');
-define('DB_NAME', 'ezyro_40038768_vivek');
+header("Content-Type: application/json; charset=UTF-8");
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Access-Control-Max-Age: 3600");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(204);
+    exit;
+}
+
+// --- 1. Database Configuration --- from config.php
 
 // --- 2. Input Handling and Routing ---
 $input_json = file_get_contents('php://input');
@@ -35,6 +38,7 @@ try {
     if ($conn->connect_error) {
         throw new Exception("Database connection failed: " . $conn->connect_error);
     }
+    $conn->set_charset('utf8mb4');
     
     switch ($action) {
         case 'register_user':
@@ -183,6 +187,7 @@ function handleLogin($conn, $data) {
         "success" => true, 
         "message" => "Login successful.", 
         "user_id" => $user['user_id'],
-        "role" => $user['role']
+        "role" => $user['role'],
+        "token" => issue_token($user['user_id'], $user['role'])
     );
 }

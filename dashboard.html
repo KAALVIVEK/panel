@@ -44,8 +44,9 @@
         function loadSession() {
             let userId = localStorage.getItem('ztrax_user_id');
             let role = localStorage.getItem('ztrax_role');
+            let token = localStorage.getItem('ztrax_token');
 
-            if (!userId || !role) {
+            if (!userId || !role || !token) {
                 // Check URL parameters only if localStorage is empty (First load after login)
                 const params = getQueryParams();
                 if (params.id && params.role) {
@@ -57,7 +58,7 @@
                 }
             }
 
-            if (!userId || !role) {
+            if (!userId || !role || !localStorage.getItem('ztrax_token')) {
                 // If credentials are still missing, redirect to login
                 window.location.href = './index.html';
                 return false;
@@ -73,6 +74,7 @@
             // Clear credentials and redirect
             localStorage.removeItem('ztrax_user_id');
             localStorage.removeItem('ztrax_role');
+            localStorage.removeItem('ztrax_token');
             window.location.href = './index.html';
         };
         
@@ -87,7 +89,12 @@
                 try {
                     const response = await fetch(PHP_API_ENDPOINT, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: (() => {
+                            const headers = { 'Content-Type': 'application/json' };
+                            const token = localStorage.getItem('ztrax_token');
+                            if (token) headers['Authorization'] = `Bearer ${token}`;
+                            return headers;
+                        })(),
                         body: JSON.stringify(payload)
                     });
                     const text = await response.text();
