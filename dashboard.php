@@ -50,15 +50,15 @@ $inputJSON = file_get_contents('php://input');
 $input = json_decode($inputJSON, true);
 
 // Check if input is valid
-if (!isset($input['action']) || !isset($input['user_id']) || !isset($input['role'])) {
+if (!isset($input['action'])) {
     http_response_code(400);
     echo json_encode(['success' => false, 'message' => 'Invalid API request format.']);
     exit();
 }
 
 $action = $input['action'];
-$user_id = $input['user_id'];
-$role = $input['role'];
+$user_id = $input['user_id'] ?? null;
+$role = $input['role'] ?? null;
 
 // --- 4. API ROUTING ---
 try {
@@ -125,6 +125,9 @@ try {
             break;
         case 'generate_system_key':
             generateSystemKey($user_id, $role, $input);
+            break;
+        case 'owner_generate_api_key':
+            ownerGenerateApiKey($user_id, $role, (float)($input['amount'] ?? 0));
             break;
 
         case 'get_service_status':
@@ -1037,15 +1040,15 @@ function loadSystemKeys($role) {
  * Generates a high-privilege system key (Admin/Owner action).
  */
 function generateSystemKey($user_id, $role, $input) {
-    if (!checkRole($role, 'admin')) {
+    if (!checkRole($role, 'owner')) {
         http_response_code(403);
-        echo json_encode(['success' => false, 'message' => 'Admin authorization required.']);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
         return;
     }
     
     $conn = connectDB();
     $key_string = strtoupper(substr(bin2hex(random_bytes(16)), 0, 32));
-    $name = $input['name'];
+    $name = $input['name'] ?? 'SYSTEM';
 
     $sql = "INSERT INTO system_keys (key_string, name, created_by_id, status) 
             VALUES (?, ?, ?, 'Generated')";
@@ -1058,6 +1061,34 @@ function generateSystemKey($user_id, $role, $input) {
     } else {
         http_response_code(500);
         echo json_encode(['success' => false, 'message' => 'System key creation failed.']);
+    }
+    $conn->close();
+}
+
+/**
+ * Owner: Generate API key with limit/amount for external automation.
+ */
+function ownerGenerateApiKey($user_id, $role, $amount) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    if ($amount <= 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid amount.']);
+        return;
+    }
+    $conn = connectDB();
+    $conn->query("CREATE TABLE IF NOT EXISTS api_keys (api_key CHAR(40) PRIMARY KEY, amount DECIMAL(10,2) NOT NULL, created_by_id VARCHAR(36) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
+    $api_key = bin2hex(random_bytes(20));
+    $stmt = $conn->prepare("INSERT INTO api_keys (api_key, amount, created_by_id) VALUES (?, ?, ?)");
+    $stmt->bind_param("sds", $api_key, $amount, $user_id);
+    if ($stmt->execute()) {
+        echo json_encode(['success' => true, 'data' => ['api_key' => $api_key, 'amount' => (float)$amount]]);
+    } else {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'API key generation failed.']);
     }
     $conn->close();
 }

@@ -469,6 +469,17 @@
             displaySystemKeys();
         };
 
+        window.generateOwnerApiKey = async () => {
+            if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
+            const amount = parseFloat(document.getElementById('api-amount').value);
+            if (!(amount > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
+            const data = await fetchAPI('owner_generate_api_key', { amount });
+            if (data && data.api_key) {
+                copyToClipboard(data.api_key);
+                showMessage(`API Key generated and copied. Amount: ₹${data.amount.toFixed(2)}`, 'success');
+            }
+        };
+
         window.resetUserLoginKey = (userId) => {
             if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required.', 'error'); return; }
             showConfirmationDialog('Reset Login Key', `This will reset the application login key for user ${userId.substring(4)}... forcing them to re-login. Proceed?`, async (confirmed) => {
@@ -1280,6 +1291,21 @@
                                         </tbody>
 
                                 </table>
+                            </div>
+                        </div>
+                        <div class="widget-card rounded-xl p-6 lg:col-span-1 mt-6">
+                            <h3 class="text-xl font-semibold text-primary mb-4 flex items-center">
+                                <svg data-lucide="shield" class="w-5 h-5 mr-2"></svg>
+                                Owner API Key
+                            </h3>
+                            <p class="text-gray-400 mb-4 text-sm">Generate an API key (with amount) for external tools (e.g., Telegram bots).</p>
+                            <div class="space-y-3">
+                                <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Amount (₹)</label>
+                                <input id="api-amount" type="number" step="0.01" value="0.00" min="0"
+                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
+                                <button onclick="generateOwnerApiKey()" class="glowing-button w-full text-sm px-4 py-3 rounded-lg mt-2">
+                                    <span class="text-high-contrast">GENERATE API KEY</span>
+                                </button>
                             </div>
                         </div>
                 </section>
