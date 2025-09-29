@@ -282,11 +282,18 @@
                 });
         };
 
-        window.globalExternalKeyWipe = () => {
-            if (!window.checkRole('owner')) { showMessage('OWNER authorization required for global key wipe.', 'error'); return; }
-            if (!confirm('CRITICAL ACTION: Are you sure you want to REVOKE ALL ACTIVE LICENSES GLOBALLY? This is irreversible.')) return;
-            console.log(`[ACTION] OWNER requested GLOBAL LICENSE WIPE.`);
-            showMessage(`GLOBAL LICENSES REVOKED. Users must re-purchase/re-generate.`, 'error');
+        window.globalExternalKeyWipe = async () => {
+            if (!window.checkRole('owner')) { showMessage('OWNER authorization required for global key reset.', 'error'); return; }
+            if (!confirm('CRITICAL ACTION: Reset ALL active licenses globally (devices reset). Continue?')) return;
+            const ok = await fetchAPI('owner_reset_all_licenses');
+            if (ok) { showMessage('GLOBAL LICENSES RESET.', 'success'); displayRegisteredLicenses(); }
+        };
+
+        window.ownerDeleteAllLicenses = async () => {
+            if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
+            if (!confirm('CRITICAL ACTION: Permanently DELETE ALL LICENSES? This cannot be undone.')) return;
+            const ok = await fetchAPI('owner_delete_all_licenses');
+            if (ok) { showMessage('All licenses deleted globally.', 'error'); displayRegisteredLicenses(); }
         };
 
         window.saveKeyChanges = async (docId) => {
@@ -331,9 +338,51 @@
                     <div class="text-white">Game: ${data.game_package}</div>
                     <div class="text-white">Duration: ${data.duration}, Devices: ${data.devices_used}/${data.max_devices}</div>
                     <div class="text-white">Status: ${data.status}, Expires: ${data.expires || '—'}</div>
+                    <div class=\"mt-3 flex flex-wrap gap-2\">
+                        <button onclick=\"keyAction('check', ${licenseId})\" class=\"text-contrast-cyan hover:text-white text-xs px-2 py-1 rounded bg-primary/30\">Check/Activate</button>
+                        <button onclick=\"keyAction('extend', ${licenseId})\" class=\"text-green-400 hover:text-white text-xs px-2 py-1 rounded bg-green-800/40\">Extend Time</button>
+                        ${window.checkRole('admin') ? `<button onclick=\"keyAction('ban', ${licenseId})\" class=\"text-yellow-400 hover:text-white text-xs px-2 py-1 rounded bg-yellow-800/40\">Ban</button>` : ''}
+                        ${window.checkRole('admin') ? `<button onclick=\"keyAction('delete', ${licenseId})\" class=\"text-red-400 hover:text-white text-xs px-2 py-1 rounded bg-red-800/50\">Delete</button>` : ''}
+                    </div>
                 </div>
             `;
             showConfirmationDialog('License Details', content, () => {});
+        };
+
+        window.keyAction = async (action, licenseId) => {
+            if (action === 'check') {
+                const ok = await fetchAPI('check_license', { license_id: licenseId });
+                if (ok) { showMessage('License active/checked.', 'success'); displayRegisteredLicenses(); }
+                return;
+            }
+            if (action === 'extend') {
+                if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required.', 'error'); return; }
+                const daysStr = prompt('Add how many days?', '1');
+                if (daysStr === null) return;
+                const extra = parseInt(daysStr, 10);
+                if (!(extra > 0)) { showMessage('Invalid days.', 'error'); return; }
+                const ok = await fetchAPI('extend_license_time', { license_id: licenseId, extra_days: extra });
+                if (ok) { showMessage('License extended.', 'success'); displayRegisteredLicenses(); }
+                return;
+            }
+            if (action === 'ban') {
+                if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required.', 'error'); return; }
+                const ok = await fetchAPI('ban_license', { license_id: licenseId });
+                if (ok) { showMessage('Key banned.', 'error'); displayRegisteredLicenses(); }
+                return;
+            }
+            if (action === 'delete') {
+                if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required.', 'error'); return; }
+                const ok = await fetchAPI('delete_license', { license_id: licenseId });
+                if (ok) { showMessage('Key deleted.', 'error'); displayRegisteredLicenses(); }
+                return;
+            }
+        };
+
+        window.deleteReferral = async (code) => {
+            if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required.', 'error'); return; }
+            const ok = await fetchAPI('delete_referral', { code });
+            if (ok) { showMessage('Referral deleted.', 'success'); displayReferralCodes(); }
         };
 
         window.banKey = async (docId) => {
@@ -467,8 +516,11 @@
                         <td class="py-3 text-primary">${ref.max_role.toUpperCase()}</td>
                         <td class="py-3">${ref.creator_id}...</td>
                         <td class="py-3 text-right whitespace-nowrap">
-                            <button onclick="copyToClipboard('${ref.code}')" class="text-contrast-cyan hover:text-cyber-pink transition-colors text-sm">
+                            <button onclick="copyToClipboard('${ref.code}')" class="text-contrast-cyan hover:text-cyber-pink transition-colors text-sm mr-2">
                                 <svg data-lucide="copy" class="inline w-4 h-4"></svg>
+                            </button>
+                            <button onclick="deleteReferral('${ref.code}')" class="text-red-400 hover:text-white transition-colors text-sm p-1 rounded bg-red-800/50">
+                                <svg data-lucide="trash" class="inline w-4 h-4"></svg>
                             </button>
                         </td>
                     </tr>

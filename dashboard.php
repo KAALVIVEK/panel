@@ -92,6 +92,9 @@ try {
         case 'create_referral':
             createReferral($user_id, $role, $input);
             break;
+        case 'delete_referral':
+            deleteReferral($user_id, $role, $input['code'] ?? '');
+            break;
         case 'load_managed_users':
             loadManagedUsers($user_id, $role);
             break;
@@ -123,6 +126,18 @@ try {
             break;
         case 'delete_user_account':
             deleteUserAccount($user_id, $role, $input['target_user_id']);
+            break;
+        case 'check_license':
+            checkLicense($user_id, $role, (int)($input['license_id'] ?? 0));
+            break;
+        case 'extend_license_time':
+            extendLicenseTime($user_id, $role, (int)($input['license_id'] ?? 0), (float)($input['extra_days'] ?? 0));
+            break;
+        case 'owner_reset_all_licenses':
+            ownerResetAllLicenses($user_id, $role);
+            break;
+        case 'owner_delete_all_licenses':
+            ownerDeleteAllLicenses($user_id, $role);
             break;
             
         default:
@@ -258,6 +273,22 @@ function loadLicenses($user_id, $role) {
 
 
 /**
+ * Maps duration id to hours for expiry computation.
+ */
+function getDurationHours($duration_id) {
+    $map = [
+        'opt1' => 5,     // 5 hours
+        'opt2' => 24,    // 1 day
+        'opt3' => 72,    // 3 days
+        'opt4' => 168,   // 7 days
+        'opt5' => 360,   // 15 days
+        'opt6' => 720,   // 30 days
+        'opt7' => 1440,  // 60 days
+    ];
+    return isset($map[$duration_id]) ? (int)$map[$duration_id] : 24;
+}
+
+/**
  * Generates a license key, deducts balance, and saves the record.
  */
 function createLicense($user_id, $role, $input) {
@@ -295,8 +326,8 @@ function createLicense($user_id, $role, $input) {
     $max_devices = (int)($input['max_devices'] ?? 1);
     $duration = $input['duration_id'];
     $game_package = $input['package_id'];
-    $days = $input['days'] ?? 1; 
-    $expires = date('Y-m-d H:i:s', strtotime("+$days days"));
+    $days = $input['days'] ?? null; 
+    $expires = NULL; // start on first use (activation)
     
     $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) 
             VALUES (?, ?, ?, ?, 0, 'Active', ?, ?)";
@@ -503,6 +534,32 @@ function loadReferrals($role) {
     $conn->close();
 }
 
+/**
+ * Deletes a referral code (Admin/Owner action).
+ */
+function deleteReferral($user_id, $role, $code) {
+    if (!checkRole($role, 'admin')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin authorization required.']);
+        return;
+    }
+    if (!$code) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Missing code.']);
+        return;
+    }
+    $conn = connectDB();
+    $stmt = $conn->prepare("DELETE FROM referrals WHERE code = ?");
+    $stmt->bind_param("s", $code);
+    if ($stmt->execute() && $stmt->affected_rows > 0) {
+        echo json_encode(['success' => true]);
+    } else {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'Referral not found.']);
+    }
+    $conn->close();
+}
+
 
 /**
  * Loads users managed by the current Admin/Owner (referred clients).
@@ -620,6 +677,106 @@ function loadLicenseInfo($user_id, $role, $license_id) {
         http_response_code(404);
         echo json_encode(['success' => false, 'message' => 'License not found.']);
     }
+    $conn->close();
+}
+
+/**
+ * Check/Activate a license. Starts expiry if not started.
+ */
+function checkLicense($user_id, $role, $license_id) {
+    if (!checkRole($role, 'user')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    // Users can only check their own; admin/owner can check any
+    if ($role === 'user') {
+        $stmt = $conn->prepare("SELECT expires FROM licenses WHERE license_id = ? AND creator_id = ? AND status != 'Banned'");
+        $stmt->bind_param("is", $license_id, $user_id);
+    } else {
+        $stmt = $conn->prepare("SELECT expires FROM licenses WHERE license_id = ? AND status != 'Banned'");
+        $stmt->bind_param("i", $license_id);
+    }
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'License not found.']);
+        $conn->close();
+        return;
+    }
+    if ($row['expires'] === NULL) {
+        // start now using duration-based hours mapping
+        $stmt = $conn->prepare("SELECT duration FROM licenses WHERE license_id = ?");
+        $stmt->bind_param("i", $license_id);
+        $stmt->execute();
+        $durRes = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        $duration_id = $durRes ? $durRes['duration'] : 'opt2';
+        $hours = getDurationHours($duration_id);
+        $stmt = $conn->prepare("UPDATE licenses SET expires = DATE_ADD(NOW(), INTERVAL ? HOUR) WHERE license_id = ?");
+        $stmt->bind_param("ii", $hours, $license_id);
+        $stmt->execute();
+    }
+    echo json_encode(['success' => true, 'message' => 'License active.']);
+    $conn->close();
+}
+
+/**
+ * Extend license by extra days (Admin/Owner).
+ */
+function extendLicenseTime($user_id, $role, $license_id, $extra_days) {
+    if (!checkRole($role, 'admin')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin authorization required.']);
+        return;
+    }
+    if ($extra_days <= 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid extra_days.']);
+        return;
+    }
+    $conn = connectDB();
+    $stmt = $conn->prepare("UPDATE licenses SET expires = COALESCE(expires, NOW()) + INTERVAL ? DAY WHERE license_id = ?");
+    $stmt->bind_param("ii", $extra_days, $license_id);
+    if ($stmt->execute() && $stmt->affected_rows > 0) {
+        echo json_encode(['success' => true]);
+    } else {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'License not found or update failed.']);
+    }
+    $conn->close();
+}
+
+/**
+ * Owner: reset all licenses (devices_used=0, linked_device_id=NULL)
+ */
+function ownerResetAllLicenses($user_id, $role) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    $conn->query("UPDATE licenses SET devices_used = 0, linked_device_id = NULL");
+    echo json_encode(['success' => true]);
+    $conn->close();
+}
+
+/**
+ * Owner: delete all licenses
+ */
+function ownerDeleteAllLicenses($user_id, $role) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    $conn->query("DELETE FROM licenses");
+    echo json_encode(['success' => true]);
     $conn->close();
 }
 
