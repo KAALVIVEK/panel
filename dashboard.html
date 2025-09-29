@@ -301,6 +301,41 @@
             }
         };
 
+        window.adminAddBalance = async (userId) => {
+            if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required.', 'error'); return; }
+            const amountStr = prompt('Enter amount to add (₹):', '0');
+            if (amountStr === null) return;
+            const amount = parseFloat(amountStr);
+            if (!(amount > 0)) { showMessage('Invalid amount.', 'error'); return; }
+            const ok = await fetchAPI('admin_add_balance', { target_user_id: userId, amount: amount });
+            if (ok) { showMessage('Balance added successfully.', 'success'); displayManagedUsers(); }
+        };
+
+        window.adminChangeRole = async (userId, currentRole) => {
+            if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required.', 'error'); return; }
+            const role = prompt('Enter new role (user, reseller, admin):', currentRole || 'user');
+            if (role === null) return;
+            const clean = (role || '').toLowerCase().trim();
+            if (!['user','reseller','admin'].includes(clean)) { showMessage('Invalid role.', 'error'); return; }
+            const ok = await fetchAPI('admin_change_role', { target_user_id: userId, new_role: clean });
+            if (ok) { showMessage('Role updated successfully.', 'success'); displayManagedUsers(); }
+        };
+
+        window.showKeyInfo = async (licenseId) => {
+            const data = await fetchAPI('load_license_info', { license_id: licenseId });
+            if (!data) return;
+            const content = `
+                <div class="text-left">
+                    <div class="font-mono text-sm text-primary">ID: #${data.license_id}</div>
+                    <div class="text-white">Key: <span class="font-mono">${data.key_string}</span></div>
+                    <div class="text-white">Game: ${data.game_package}</div>
+                    <div class="text-white">Duration: ${data.duration}, Devices: ${data.devices_used}/${data.max_devices}</div>
+                    <div class="text-white">Status: ${data.status}, Expires: ${data.expires || '—'}</div>
+                </div>
+            `;
+            showConfirmationDialog('License Details', content, () => {});
+        };
+
         window.banKey = async (docId) => {
             if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required to ban keys.', 'error'); return; }
             showConfirmationDialog('Ban Key Access', 'This will set the key status to **BANNED**, immediately revoking access. Proceed?', async (confirmed) => {
@@ -375,8 +410,11 @@
             if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
             showConfirmationDialog('Delete User Account', `CRITICAL: Permanently DELETE user ${userId.substring(4)}... and all associated data?`, async (confirmed) => {
                 if (confirmed) {
-                    showMessage(`User ${userId.substring(4)}... permanently deleted.`, 'error');
-                    displayManagedUsers();
+                    const result = await fetchAPI('delete_user_account', { target_user_id: userId });
+                    if (result) {
+                        showMessage(`User ${userId.substring(4)}... permanently deleted.`, 'error');
+                        displayManagedUsers();
+                    }
                 }
             });
         };
@@ -454,6 +492,16 @@
                     const hasLicense = user.active_license_id;
                     const resetClass = hasLicense ? 'bg-yellow-800/50 hover:bg-yellow-700' : 'bg-gray-800/50 cursor-not-allowed opacity-50';
                     const resetDisabled = hasLicense ? '' : 'disabled';
+                    const adminActions = window.checkRole('admin') ? `
+                        <button onclick="adminAddBalance('${user.user_id}')" class="text-green-400 hover:text-white transition-colors text-sm ml-3 p-1 rounded bg-green-800/40">
+                            <svg data-lucide="wallet" class="inline w-4 h-4"></svg>
+                            Add Balance
+                        </button>
+                        <button onclick="adminChangeRole('${user.user_id}','${user.role}')" class="text-primary hover:text-white transition-colors text-sm ml-3 p-1 rounded bg-primary/20">
+                            <svg data-lucide="shield" class="inline w-4 h-4"></svg>
+                            Change Role
+                        </button>
+                    ` : '';
                     return `
                         <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
                             <td class="py-3 text-primary truncate max-w-[100px]">${user.user_id.substring(4)}...</td>
@@ -474,6 +522,7 @@
                                     <svg data-lucide="lock" class="inline w-4 h-4"></svg>
                                     Block
                                 </button>
+                                ${adminActions}
                                 ${deleteAction}
                             </td>
                         </tr>

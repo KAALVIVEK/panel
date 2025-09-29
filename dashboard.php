@@ -95,6 +95,15 @@ try {
         case 'load_managed_users':
             loadManagedUsers($user_id, $role);
             break;
+        case 'admin_add_balance':
+            adminAddBalance($user_id, $role, $input['target_user_id'], (float)($input['amount'] ?? 0));
+            break;
+        case 'admin_change_role':
+            adminChangeRole($user_id, $role, $input['target_user_id'], $input['new_role'] ?? 'user');
+            break;
+        case 'load_license_info':
+            loadLicenseInfo($user_id, $role, (int)($input['license_id'] ?? 0));
+            break;
         case 'admin_reset_client_key':
             adminResetClientKey($user_id, $role, $input['license_id']);
             break;
@@ -530,6 +539,89 @@ function loadManagedUsers($user_id, $role) {
     $conn->close();
 }
 
+
+/**
+ * Admin/Owner: Add balance to a user.
+ */
+function adminAddBalance($current_user_id, $role, $target_user_id, $amount) {
+    if (!checkRole($role, 'admin')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin authorization required.']);
+        return;
+    }
+    if ($amount <= 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid amount.']);
+        return;
+    }
+    $conn = connectDB();
+    $stmt = $conn->prepare("UPDATE users SET balance = balance + ? WHERE user_id = ?");
+    $stmt->bind_param("ds", $amount, $target_user_id);
+    if ($stmt->execute() && $stmt->affected_rows > 0) {
+        echo json_encode(['success' => true]);
+    } else {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'User not found or update failed.']);
+    }
+    $conn->close();
+}
+
+/**
+ * Admin/Owner: Change user role (cannot set owner).
+ */
+function adminChangeRole($current_user_id, $role, $target_user_id, $new_role) {
+    if (!checkRole($role, 'admin')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin authorization required.']);
+        return;
+    }
+    $allowed = ['user','reseller','admin'];
+    if (!in_array($new_role, $allowed, true)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid role.']);
+        return;
+    }
+    $conn = connectDB();
+    $stmt = $conn->prepare("UPDATE users SET role = ? WHERE user_id = ?");
+    $stmt->bind_param("ss", $new_role, $target_user_id);
+    if ($stmt->execute() && $stmt->affected_rows > 0) {
+        echo json_encode(['success' => true]);
+    } else {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'User not found or update failed.']);
+    }
+    $conn->close();
+}
+
+/**
+ * Load single license info for the key info modal.
+ */
+function loadLicenseInfo($user_id, $role, $license_id) {
+    if (!checkRole($role, 'user')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    // Owner/Admin can view any; users can only view their own licenses
+    if ($role === 'user') {
+        $stmt = $conn->prepare("SELECT license_id, key_string, game_package, duration, max_devices, devices_used, status, expires FROM licenses WHERE license_id = ? AND creator_id = ?");
+        $stmt->bind_param("is", $license_id, $user_id);
+    } else {
+        $stmt = $conn->prepare("SELECT license_id, key_string, game_package, duration, max_devices, devices_used, status, expires FROM licenses WHERE license_id = ?");
+        $stmt->bind_param("i", $license_id);
+    }
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $row = $res ? $res->fetch_assoc() : null;
+    if ($row) {
+        echo json_encode(['success' => true, 'data' => $row]);
+    } else {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'License not found.']);
+    }
+    $conn->close();
+}
 
 /**
  * Admin/Owner action to reset the device linkage on a client's key.
