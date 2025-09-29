@@ -567,8 +567,8 @@ function adminResetClientKey($current_user_id, $role, $license_id) {
 
     $sql = "UPDATE licenses SET devices_used = 0, linked_device_id = NULL WHERE license_id = ?";
     $stmt = $conn->prepare($sql);
-    // FIX BINDING: Use 'is' (Integer, String) for license_id and user_id
-    if (!$stmt->bind_param("is", $license_id, $user_id) || !$stmt->execute()) {
+    // Correct binding: single integer parameter for license_id
+    if (!$stmt->bind_param("i", $license_id) || !$stmt->execute()) {
         $error_message = $conn->error;
         http_response_code(500);
         echo json_encode(['success' => false, 'message' => 'Admin reset failed: ' . $error_message]);
