@@ -127,6 +127,13 @@ try {
             generateSystemKey($user_id, $role, $input);
             break;
 
+        case 'get_service_status':
+            getServiceStatus();
+            break;
+        case 'owner_set_key_generation':
+            ownerSetKeyGeneration($user_id, $role, (bool)($input['enabled'] ?? false));
+            break;
+
         case 'reset_user_login_key':
             resetUserLoginKey($user_id, $role, $input['target_user_id']);
             break;
@@ -314,6 +321,36 @@ function getDurationHours($duration_id) {
         'opt7' => 1440,  // 60 days
     ];
     return isset($map[$duration_id]) ? (int)$map[$duration_id] : 24;
+}
+
+/** Service flags helpers **/
+function ensureServiceFlagsTable($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS service_flags (flag VARCHAR(64) PRIMARY KEY, value VARCHAR(16) NOT NULL DEFAULT '0', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)");
+}
+
+function getServiceStatus() {
+    $conn = connectDB();
+    ensureServiceFlagsTable($conn);
+    $res = $conn->query("SELECT value FROM service_flags WHERE flag='key_generation_enabled' LIMIT 1");
+    $enabled = ($res && $row = $res->fetch_assoc()) ? $row['value'] === '1' : true; // default enabled
+    echo json_encode(['success' => true, 'data' => ['key_generation_enabled' => $enabled]]);
+    $conn->close();
+}
+
+function ownerSetKeyGeneration($user_id, $role, $enabled) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    ensureServiceFlagsTable($conn);
+    $val = $enabled ? '1' : '0';
+    $stmt = $conn->prepare("INSERT INTO service_flags (flag, value) VALUES ('key_generation_enabled', ?) ON DUPLICATE KEY UPDATE value=VALUES(value)");
+    $stmt->bind_param("s", $val);
+    $stmt->execute();
+    echo json_encode(['success' => true]);
+    $conn->close();
 }
 
 /**

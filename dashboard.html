@@ -750,6 +750,12 @@
             overlay.classList.toggle('hidden', !open);
         };
 
+        window.toggleKeyGen = async (enabled) => {
+            if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
+            const ok = await fetchAPI('owner_set_key_generation', { enabled: !!enabled });
+            if (ok) { showMessage(`Key generation ${enabled ? 'enabled' : 'disabled'}.`, 'success'); }
+        };
+
         window.changeDashboardView = (newView) => {
             window.dashboardView = newView;
             window.renderApp();
@@ -782,6 +788,12 @@
                 // Default to licenses view if none specified
                 window.dashboardView = 'licenses'; 
                 window.loadInitialData();
+                fetchAPI('get_service_status').then(data => {
+                    const el = document.getElementById('svc-keygen');
+                    if (el && data && typeof data.key_generation_enabled !== 'undefined') {
+                        el.checked = !!data.key_generation_enabled;
+                    }
+                });
             }
         });
     </script>
@@ -1197,17 +1209,16 @@
                 <section id="content-control-panel" class="dashboard-content-section hidden">
                     <h2 class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-primary/50 pb-2">
                         Control Panel</h2>
-                    <div class="widget-card rounded-xl p-6">
+                        <div class="widget-card rounded-xl p-6">
                         <h3 class="text-xl font-semibold text-primary mb-4">Service Status Toggle</h3>
-                        <p class="text-gray-400 mb-4 text-sm">Enable or disable core Ztrax services globally.</p>
+                            <p class="text-gray-400 mb-4 text-sm">Enable or disable core Ztrax services globally.</p>
 
                         <div class="space-y-4">
                             <label
                                 class="flex items-center justify-between p-3 widget-card rounded-lg border-primary/30 cursor-pointer">
                                 <span class="font-semibold text-white">Key Generation Service</span>
-                                <input type="checkbox"
-                                    class="form-checkbox h-5 w-5 text-cyber-pink bg-gray-700 rounded border-gray-600 focus:ring-cyber-pink"
-                                    checked>
+                                <input id="svc-keygen" type="checkbox" onchange="toggleKeyGen(this.checked)"
+                                    class="form-checkbox h-5 w-5 text-cyber-pink bg-gray-700 rounded border-gray-600 focus:ring-cyber-pink">
                             </label>
                             <label
                                 class="flex items-center justify-between p-3 widget-card rounded-lg border-primary/30 cursor-pointer">
