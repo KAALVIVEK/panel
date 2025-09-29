@@ -136,6 +136,9 @@ try {
         case 'delete_user_account':
             deleteUserAccount($user_id, $role, $input['target_user_id']);
             break;
+        case 'change_password':
+            changePassword($user_id, $input['current_password'] ?? '', $input['new_password'] ?? '');
+            break;
         case 'check_license':
             checkLicense($user_id, $role, (int)($input['license_id'] ?? 0), $input['device_id'] ?? null);
             break;
@@ -1121,6 +1124,39 @@ function deleteUserAccount($current_user_id, $role, $target_user_id) {
         $conn->rollback();
         http_response_code(500);
         echo json_encode(['success' => false, 'message' => 'Deletion failed due to database error.']);
+    }
+    $conn->close();
+}
+
+/**
+ * User: change own password (requires current password).
+ */
+function changePassword($user_id, $current_password, $new_password) {
+    if (!$new_password || strlen($new_password) < 8) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'New password must be at least 8 characters.']);
+        return;
+    }
+    $conn = connectDB();
+    $stmt = $conn->prepare("SELECT password_hash FROM users WHERE user_id = ?");
+    $stmt->bind_param("s", $user_id);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row || !password_verify($current_password, $row['password_hash'])) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Current password is incorrect.']);
+        $conn->close();
+        return;
+    }
+    $new_hash = password_hash($new_password, PASSWORD_DEFAULT);
+    $stmt = $conn->prepare("UPDATE users SET password_hash = ? WHERE user_id = ?");
+    $stmt->bind_param("ss", $new_hash, $user_id);
+    if ($stmt->execute() && $stmt->affected_rows > 0) {
+        echo json_encode(['success' => true, 'message' => 'Password updated successfully.']);
+    } else {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Password update failed.']);
     }
     $conn->close();
 }

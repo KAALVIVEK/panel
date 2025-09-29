@@ -409,6 +409,15 @@
             if (ok) { showMessage('Referral deleted.', 'success'); displayReferralCodes(); }
         };
 
+        window.changePasswordPrompt = async () => {
+            const current = prompt('Enter current password:');
+            if (current === null || current === '') return;
+            const next = prompt('Enter new password (min 8 chars):');
+            if (next === null || next.length < 8) { showMessage('New password too short.', 'error'); return; }
+            const ok = await fetchAPI('change_password', { current_password: current, new_password: next });
+            if (ok) { showMessage('Password changed successfully.', 'success'); }
+        };
+
         window.banKey = async (docId) => {
             if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required to ban keys.', 'error'); return; }
             showConfirmationDialog('Ban Key Access', 'This will set the key status to **BANNED**, immediately revoking access. Proceed?', async (confirmed) => {
@@ -1399,7 +1408,7 @@
                         <div class="widget-card rounded-xl p-6">
                             <h3 class="text-xl font-semibold text-cyber-pink mb-4">Security Protocol</h3>
                             <p class="text-gray-400 text-sm">Change your security credentials.</p>
-                            <button class="glowing-button text-sm px-4 py-2 mt-4 rounded-lg">
+                            <button onclick="changePasswordPrompt()" class="glowing-button text-sm px-4 py-2 mt-4 rounded-lg">
                                 Change Password
                             </button>
                         </div>
