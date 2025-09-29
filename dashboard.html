@@ -1,0 +1,1297 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="pageTitle">Ztrax Console - Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+
+    <script>
+        // --- CORE CONFIGURATION ---
+        const PHP_API_ENDPOINT = 'https://puclone.unaux.com/api/dashboard.php';
+
+        // Game List with required package names for validation
+        const GAMES = [
+            { name: 'BattleGrounds Mobile India', package: 'com.pubg.imobile' },
+            { name: 'PUBG', package: 'com.tencent.ig' },
+            { name: 'Call of Duty Mobile', package: 'com.activision.callofduty.shooter' }
+        ];
+
+        // Key Data Structure for License Generation
+        const LICENSE_OPTIONS = [
+            { id: 'opt1', duration: '5 Hour', days: 0.208, price: 30.00 },
+            { id: 'opt2', duration: '1 Day', days: 1, price: 60.00 },
+            { id: 'opt3', duration: '3 Days', days: 3, price: 150.00 },
+            { id: 'opt4', duration: '7 Days', days: 7, price: 250.00 },
+            { id: 'opt5', duration: '15 Days', days: 15, price: 400.00 },
+            { id: 'opt6', duration: '30 Days', days: 30, price: 600.00 },
+            { id: 'opt7', duration: '60 Days', days: 60, price: 800.00 },
+        ];
+
+        
+        function getQueryParams() {
+            const params = new URLSearchParams(window.location.search);
+            return {
+                id: params.get('user_id') || null,
+                role: params.get('role') || null
+            };
+        }
+
+        /** Loads session data from localStorage, falling back to URL parameters. */
+        function loadSession() {
+            let userId = localStorage.getItem('ztrax_user_id');
+            let role = localStorage.getItem('ztrax_role');
+
+            if (!userId || !role) {
+                // Check URL parameters only if localStorage is empty (First load after login)
+                const params = getQueryParams();
+                if (params.id && params.role) {
+                    userId = params.id;
+                    role = params.role;
+                    // Store for persistence
+                    localStorage.setItem('ztrax_user_id', userId);
+                    localStorage.setItem('ztrax_role', role);
+                }
+            }
+
+            if (!userId || !role) {
+                // If credentials are still missing, redirect to login
+                window.location.href = './index.html';
+                return false;
+            }
+
+            // Assign global window variables
+            window.currentUserId = userId;
+            window.userRole = role;
+            return true;
+        }
+
+        window.logout = () => {
+            // Clear credentials and redirect
+            localStorage.removeItem('ztrax_user_id');
+            localStorage.removeItem('ztrax_role');
+            window.location.href = './index.html';
+        };
+        
+        async function fetchAPI(action, data = {}) {
+            const payload = {
+                action: action,
+                user_id: window.currentUserId,
+                role: window.userRole,
+                ...data
+            };
+            for (let i = 0; i < 3; i++) {
+                try {
+                    const response = await fetch(PHP_API_ENDPOINT, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    const result = await response.json();
+                    if (result.success) {
+                        return result.data;
+                    } else {
+                        showMessage(result.message || `API Error: ${action} failed.`, 'error');
+                        return null;
+                    }
+                } catch (error) {
+                    if (i < 2) {
+                        await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+                    } else {
+                        console.error(`[API] Final failure for action ${action}:`, error);
+                        showMessage(`Network error. Could not connect to Ztrax server.`, 'error');
+                        return null;
+                    }
+                }
+            }
+        }
+
+        window.checkRole = (requiredRole) => {
+            const role = window.userRole;
+            if (requiredRole === 'user') return true;
+            if (requiredRole === 'reseller' && (role === 'reseller' || role === 'admin' || role === 'owner')) return true;
+            if (requiredRole === 'admin' && (role === 'admin' || role === 'owner')) return true;
+            if (requiredRole === 'owner' && role === 'owner') return true;
+            return false;
+        };
+
+        function generateRandomKey() {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+            let result = '';
+            for (let i = 0; i < 22; i++) {
+                result += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return result;
+        }
+
+        window.copyToClipboard = (text) => {
+            navigator.clipboard.writeText(text).then(() => {
+                showMessage(`Copied key to clipboard: ${text.substring(0, 8)}...`, 'success');
+            }).catch(err => {
+                console.error('Could not copy text: ', err);
+                showMessage('Failed to copy key to clipboard.', 'error');
+            });
+        };
+
+        function showMessage(text, type) {
+            const container = document.getElementById('dashboardMessage');
+            if (!container) return;
+            container.innerHTML = text;
+            container.classList.remove('hidden', 'bg-red-900/40', 'text-red-300', 'border-red-500/30', 'bg-green-900/40', 'text-green-300', 'border-green-500/30');
+            if (type === 'success') {
+                container.classList.add('bg-green-900/40', 'text-green-300', 'border-green-500/30');
+            } else if (type === 'error') {
+                container.classList.add('bg-red-900/40', 'text-red-300', 'border-red-500/30');
+            }
+            setTimeout(() => {
+                container.classList.add('hidden');
+            }, 5000);
+        }
+
+        window.showConfirmationDialog = (title, message, callback) => {
+            const modal = document.getElementById('confirmationModal');
+            document.getElementById('modalTitle').innerHTML = title;
+            document.getElementById('modalMessage').innerHTML = message;
+            modal.classList.remove('hidden');
+            const oldCustomContainer = document.getElementById('customButtonContainer');
+            if (oldCustomContainer) { oldCustomContainer.remove(); }
+            const defaultButtons = document.getElementById('modalButtonsDefault');
+            if (defaultButtons) { defaultButtons.classList.remove('hidden'); }
+            document.getElementById('modalContent').classList.remove('bg-gray-900/90', 'text-white', 'border-primary');
+            document.getElementById('modalContent').classList.add('bg-white', 'text-gray-800');
+            document.getElementById('modalAlertIcon').classList.remove('text-primary');
+            document.getElementById('modalAlertIcon').classList.add('text-orange-400');
+            document.getElementById('confirmYes').textContent = 'Yes Do';
+            document.getElementById('confirmYes').classList.remove('bg-primary/50', 'hover:bg-primary');
+            document.getElementById('confirmYes').classList.add('bg-blue-600', 'hover:bg-blue-700');
+            document.getElementById('confirmCancel').classList.remove('hidden');
+            document.getElementById('confirmCancel').classList.add('bg-red-600');
+            document.getElementById('confirmYes').onclick = () => {
+                modal.classList.add('hidden');
+                callback(true);
+            };
+            document.getElementById('confirmCancel').onclick = () => {
+                modal.classList.add('hidden');
+                callback(false);
+            };
+        };
+
+        window.updateLicenseTotal = () => {
+            const durationSelect = document.getElementById('license-duration');
+            const maxDevicesInput = document.getElementById('max-devices');
+            const selectedDuration = durationSelect.value ? LICENSE_OPTIONS.find(opt => opt.id === durationSelect.value) : null;
+            const maxDevices = parseInt(maxDevicesInput.value) || 1;
+            let totalCost = 0;
+            if (selectedDuration) {
+                totalCost = selectedDuration.price * maxDevices;
+            }
+            document.getElementById('licenseTotalCost').textContent = totalCost.toFixed(2);
+            document.getElementById('licenseTotalCost').classList.toggle('text-red-400', totalCost > window.userBalance);
+            document.getElementById('licenseTotalCost').classList.toggle('text-green-400', totalCost <= window.userBalance);
+            document.getElementById('generateLicenseButton').disabled = totalCost === 0 || totalCost > window.userBalance;
+            document.getElementById('generateLicenseButton').classList.toggle('opacity-50', totalCost > window.userBalance);
+        };
+
+        window.loadInitialData = async () => {
+            const data = await fetchAPI('load_initial_data');
+            if (data) {
+                window.userRole = data.role || 'user';
+                window.userBalance = data.balance || 0.00;
+                window.userEmail = data.email || 'not-loaded@ztrax.com';
+                window.referredByStatus = data.referred_by_status || null;
+
+                window.renderApp();
+                if (window.dashboardView === 'licenses') displayRegisteredLicenses();
+                if (window.dashboardView === 'manage-users') displayManagedUsers();
+                if (window.dashboardView === 'system-keys') displaySystemKeys();
+                if (window.dashboardView === 'create-referral') displayReferralCodes();
+            }
+        };
+
+        window.generateLicenseKey = async (event) => {
+            event.preventDefault();
+            if (!window.checkRole('user')) { showMessage('Authorization required.', 'error'); return; }
+            const totalCost = parseFloat(document.getElementById('licenseTotalCost').textContent);
+            const maxDevices = parseInt(document.getElementById('max-devices').value) || 1;
+            const packageId = document.getElementById('license-game').value;
+            const durationId = document.getElementById('license-duration').value;
+            const selectedDuration = LICENSE_OPTIONS.find(opt => opt.id === durationId);
+            const gameName = GAMES.find(g => g.package === packageId).name;
+            showConfirmationDialog('Confirm License Generation',
+                `You are about to generate a **${gameName}** license key for **${selectedDuration.duration}** costing **₹${totalCost.toFixed(2)}}. Deduct balance?`,
+                async (confirmed) => {
+                    if (!confirmed) {
+                        showMessage('License generation cancelled.', 'error');
+                        return;
+                    }
+                    const newKeyData = await fetchAPI('create_license', {
+                        package_id: packageId,
+                        duration_id: durationId,
+                        max_devices: maxDevices,
+                        cost: totalCost
+                    });
+                    if (newKeyData) {
+                        window.userBalance = newKeyData.new_balance;
+                        window.updateLicenseTotal();
+                        window.copyToClipboard(newKeyData.key_string);
+                        showMessage(`License key generated and copied! New Balance: ₹${window.userBalance.toFixed(2)}.`, 'success');
+                        displayRegisteredLicenses();
+                        window.changeDashboardView('licenses');
+                    }
+                });
+        };
+
+        window.resetKey = (docId) => {
+            if (!window.checkRole('user')) { showMessage('Authorization required.', 'error'); return; }
+            showConfirmationDialog('Key Device Reset', 'This will reset the key\'s linked device ID, allowing it to be used on a new device. Continue?', async (confirmed) => {
+                if (confirmed) {
+                    const result = await fetchAPI('reset_license', { license_id: docId });
+                    if (result) {
+                        showMessage('Key device link reset successfully! Ready for new device login.', 'success');
+                        displayRegisteredLicenses();
+                    }
+                }
+            });
+        };
+
+        window.resetClientRegisteredKey = (licenseDocId) => {
+            if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required to reset client keys.', 'error'); return; }
+            if (!licenseDocId || licenseDocId === 'null') { showMessage('User has no active license key linked to reset.', 'error'); return; }
+            showConfirmationDialog('Admin Key Reset',
+                `Are you sure you want to remotely reset the device link for license ID **${licenseDocId.substring(0, 6)}...**? This grants the client a new device slot.`,
+                async (confirmed) => {
+                    if (confirmed) {
+                        const result = await fetchAPI('admin_reset_client_key', { license_id: licenseDocId });
+                        if (result) {
+                            showMessage(`Client Key ${licenseDocId.substring(0, 6)}... device link reset successfully!`, 'success');
+                            displayManagedUsers();
+                        }
+                    }
+                });
+        };
+
+        window.globalExternalKeyWipe = () => {
+            if (!window.checkRole('owner')) { showMessage('OWNER authorization required for global key wipe.', 'error'); return; }
+            if (!confirm('CRITICAL ACTION: Are you sure you want to REVOKE ALL ACTIVE LICENSES GLOBALLY? This is irreversible.')) return;
+            console.log(`[ACTION] OWNER requested GLOBAL LICENSE WIPE.`);
+            showMessage(`GLOBAL LICENSES REVOKED. Users must re-purchase/re-generate.`, 'error');
+        };
+
+        window.saveKeyChanges = async (docId) => {
+            if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required to save changes.', 'error'); return; }
+            const form = document.getElementById('keyEditForm');
+            const formData = new FormData(form);
+            const updates = Object.fromEntries(formData.entries());
+            const result = await fetchAPI('update_license_details', { license_id: docId, updates: updates });
+            if (result) {
+                showMessage('Key saved successfully!', 'success');
+                displayRegisteredLicenses();
+            }
+        };
+
+        window.banKey = async (docId) => {
+            if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required to ban keys.', 'error'); return; }
+            showConfirmationDialog('Ban Key Access', 'This will set the key status to **BANNED**, immediately revoking access. Proceed?', async (confirmed) => {
+                if (confirmed) {
+                    const result = await fetchAPI('ban_license', { license_id: docId });
+                    if (result) {
+                        showMessage('Key banned successfully.', 'error');
+                        displayRegisteredLicenses();
+                    }
+                }
+            });
+        };
+
+        window.deleteKey = (docId) => {
+            if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required to delete keys.', 'error'); return; }
+            showConfirmationDialog('Delete Key Permanently', 'WARNING: This will permanently **DELETE** the key. No balance will be refunded. Are you sure?', async (confirmed) => {
+                if (confirmed) {
+                    const result = await fetchAPI('delete_license', { license_id: docId });
+                    if (result) {
+                        showMessage(`Key deleted permanently.`, 'error');
+                        displayRegisteredLicenses();
+                    }
+                }
+            });
+        };
+
+        window.generateReferral = async (event) => {
+            event.preventDefault();
+            if (!window.checkRole('admin')) { showMessage('Only Admin/Owner can generate referral codes.', 'error'); return; }
+            const balance = parseFloat(document.getElementById('referral-balance').value);
+            const role = document.getElementById('referral-role').value;
+            if (balance <= 0 || isNaN(balance)) { showMessage('Please enter a valid balance amount.', 'error'); return; }
+            if (role === 'owner') { showMessage('Cannot assign Owner role via referral code.', 'error'); return; }
+            const newReferralCode = generateRandomKey().substring(0, 8);
+            const newReferralData = await fetchAPI('create_referral', {
+                code: newReferralCode,
+                balance: balance,
+                role: role
+            });
+            if (newReferralData) {
+                showMessage(`Referral Code **${newReferralCode}** generated (Max Role: ${role.toUpperCase()}).`, 'success');
+                displayReferralCodes();
+            }
+        };
+
+        window.generateSystemKey = () => {
+            if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required to generate system keys.', 'error'); return; }
+            const keyName = document.getElementById('system-key-name').value;
+            if (!keyName) { showMessage('Please enter a key designation.', 'error'); return; }
+            showMessage(`Generating system key for ${keyName}. (API call stub)`, 'success');
+            displaySystemKeys();
+        };
+
+        window.resetUserLoginKey = (userId) => {
+            if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required.', 'error'); return; }
+            showConfirmationDialog('Reset Login Key', `This will reset the application login key for user ${userId.substring(4)}... forcing them to re-login. Proceed?`, async (confirmed) => {
+                if (confirmed) {
+                    showMessage(`User ${userId.substring(4)}... login key reset successfully.`, 'success');
+                }
+            });
+        };
+
+        window.blockUser = (userId) => {
+            if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required.', 'error'); return; }
+            showConfirmationDialog('Block User Access', `Are you sure you want to block **ALL** access for user ${userId.substring(4)}...?`, async (confirmed) => {
+                if (confirmed) {
+                    showMessage(`User ${userId.substring(4)}... blocked successfully.`, 'error');
+                    displayManagedUsers();
+                }
+            });
+        };
+
+        window.deleteUserAccount = (userId) => {
+            if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
+            showConfirmationDialog('Delete User Account', `CRITICAL: Permanently DELETE user ${userId.substring(4)}... and all associated data?`, async (confirmed) => {
+                if (confirmed) {
+                    showMessage(`User ${userId.substring(4)}... permanently deleted.`, 'error');
+                    displayManagedUsers();
+                }
+            });
+        };
+
+        let activeLicenses = [];
+        let activeReferrals = [];
+        let managedUsers = [];
+        let systemKeys = [];
+
+        async function displayRegisteredLicenses() {
+            const keysData = await fetchAPI('load_licenses');
+            if (keysData) {
+                activeLicenses = keysData;
+                const tableBody = document.getElementById('registeredLicensesTableBody');
+                if (!tableBody) return;
+                tableBody.innerHTML = activeLicenses.map(key => {
+                    const gameInfo = GAMES.find(g => g.package === key.game_package) || { name: 'Unknown' };
+                    return `
+                        <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
+                            <td class="py-3 text-primary">#${key.license_id}</td> 
+                            <td class="py-3 text-white">${gameInfo.name.split(' ')[0]}</td>
+                            <td class="py-3 truncate max-w-xs">${key.key_string}</td>
+                            <td class="py-3">${key.duration}</td>
+                            <td class="py-3 text-yellow-400">${key.expires || '(not started yet)'}</td>
+                            <td class="py-3 text-right whitespace-nowrap">
+                                <button onclick="showKeyInfo(${key.license_id})" class="text-primary hover:text-white transition-colors text-sm ml-3 p-1 bg-primary/20 rounded-full">
+                                    <svg data-lucide="info" class="inline w-4 h-4"></svg>
+                                </button>
+                                <button onclick="resetKey('${key.license_id}')" class="text-red-400 hover:text-white transition-colors text-sm ml-3 p-1 bg-red-600/20 rounded-full">
+                                    <svg data-lucide="rotate-ccw" class="inline w-4 h-4"></svg>
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+                if (typeof lucide !== 'undefined' && lucide.createIcons) { lucide.createIcons(); }
+            }
+        }
+
+        async function displayReferralCodes() {
+            const referralsData = await fetchAPI('load_referrals');
+            if (referralsData) {
+                activeReferrals = referralsData;
+                const tableBody = document.getElementById('referralCodesTableBody');
+                if (!tableBody) return;
+                tableBody.innerHTML = activeReferrals.map(ref => `
+                    <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
+                        <td class="py-3 text-cyber-pink">${ref.code}</td>
+                        <td class="py-3 text-green-400">₹${parseFloat(ref.initial_balance).toFixed(2)}</td>
+                        <td class="py-3 text-primary">${ref.max_role.toUpperCase()}</td>
+                        <td class="py-3">${ref.creator_id}...</td>
+                        <td class="py-3 text-right whitespace-nowrap">
+                            <button onclick="copyToClipboard('${ref.code}')" class="text-contrast-cyan hover:text-cyber-pink transition-colors text-sm">
+                                <svg data-lucide="copy" class="inline w-4 h-4"></svg>
+                            </button>
+                        </td>
+                    </tr>
+                `).join('');
+                if (typeof lucide !== 'undefined' && lucide.createIcons) { lucide.createIcons(); }
+            }
+        }
+
+        async function displayManagedUsers() {
+            const usersData = await fetchAPI('load_managed_users');
+            if (usersData) {
+                managedUsers = usersData;
+                const tableBody = document.getElementById('managedUsersTableBody');
+                if (!tableBody) return;
+                tableBody.innerHTML = managedUsers.map(user => {
+                    const statusClass = user.status === 'Active' ? 'text-green-400' : 'text-red-400';
+                    const deleteAction = window.checkRole('owner') ?
+                        `<button onclick="deleteUserAccount('${user.user_id}')" class="text-red-600 hover:text-white transition-colors text-sm ml-3 p-1 rounded bg-red-800/50">
+                            <svg data-lucide="trash" class="inline w-4 h-4"></svg>
+                        </button>` : '';
+                    const hasLicense = user.active_license_id;
+                    const resetClass = hasLicense ? 'bg-yellow-800/50 hover:bg-yellow-700' : 'bg-gray-800/50 cursor-not-allowed opacity-50';
+                    const resetDisabled = hasLicense ? '' : 'disabled';
+                    return `
+                        <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
+                            <td class="py-3 text-primary truncate max-w-[100px]">${user.user_id.substring(4)}...</td>
+                            <td class="py-3 text-white">${user.email}</td>
+                            <td class="py-3 text-cyber-pink">${user.role.toUpperCase()}</td>
+                            <td class="py-3 text-primary">${user.referral_code || 'N/A'}</td>
+                            <td class="py-3"><span class="${statusClass}">${user.status.toUpperCase()}</span></td>
+                            <td class="py-3 text-right whitespace-nowrap">
+                                <button onclick="resetUserLoginKey('${user.user_id}')" class="text-contrast-cyan hover:text-white transition-colors text-sm p-1 rounded bg-primary/30">
+                                    <svg data-lucide="key" class="inline w-4 h-4 mr-1"></svg>
+                                    Reset Login
+                                </button>
+                                <button onclick="resetClientRegisteredKey('${user.active_license_id}')" class="text-yellow-400 transition-colors text-sm ml-3 p-1 rounded ${resetClass}" ${resetDisabled}>
+                                    <svg data-lucide="rotate-ccw" class="inline w-4 h-4"></svg>
+                                    Reset Client Key
+                                </button>
+                                <button onclick="blockUser('${user.user_id}')" class="text-red-400 hover:text-white transition-colors text-sm ml-3 p-1 rounded bg-red-800/50">
+                                    <svg data-lucide="lock" class="inline w-4 h-4"></svg>
+                                    Block
+                                </button>
+                                ${deleteAction}
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+                if (typeof lucide !== 'undefined' && lucide.createIcons) { lucide.createIcons(); }
+            }
+        }
+
+        async function displaySystemKeys() {
+            const systemKeysData = await fetchAPI('load_system_keys');
+            if (systemKeysData) {
+                systemKeys = systemKeysData;
+                const tableBody = document.getElementById('systemKeysTableBody');
+                if (!tableBody) return;
+                tableBody.innerHTML = systemKeys.map(key => `
+                    <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
+                        <td class="py-3 text-cyber-pink truncate max-w-xs">${key.key_string}</td>
+                        <td class="py-3">${key.name}</td>
+                        <td class="py-3 text-primary">${key.created_by_id}...</td>
+                        <td class="py-3">
+                            <span class="${key.status === 'Generated' ? 'text-green-400' : 'text-yellow-400'}">${key.status.toUpperCase()}</span>
+                        </td>
+                        <td class="py-3 text-right whitespace-nowrap">
+                            <button onclick="copyToClipboard('${key.key_string}')" class="text-contrast-cyan hover:text-cyber-pink transition-colors text-sm">
+                                <svg data-lucide="copy" class="inline w-4 h-4"></svg>
+                            </button>
+                        </td>
+                    </tr>
+                `).join('');
+                if (typeof lucide !== 'undefined' && lucide.createIcons) { lucide.createIcons(); }
+            }
+        }
+
+        async function displayReferralCodes() {
+            const referralsData = await fetchAPI('load_referrals');
+            if (referralsData) {
+                activeReferrals = referralsData;
+                const tableBody = document.getElementById('referralCodesTableBody');
+                if (!tableBody) return;
+                tableBody.innerHTML = activeReferrals.map(ref => `
+                    <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
+                        <td class="py-3 text-cyber-pink">${ref.code}</td>
+                        <td class="py-3 text-green-400">₹${parseFloat(ref.initial_balance).toFixed(2)}</td>
+                        <td class="py-3 text-primary">${ref.max_role.toUpperCase()}</td>
+                        <td class="py-3">${ref.creator_id}...</td>
+                        <td class="py-3 text-right whitespace-nowrap">
+                            <button onclick="copyToClipboard('${ref.code}')" class="text-contrast-cyan hover:text-cyber-pink transition-colors text-sm">
+                                <svg data-lucide="copy" class="inline w-4 h-4"></svg>
+                            </button>
+                        </td>
+                    </tr>
+                `).join('');
+                if (typeof lucide !== 'undefined' && lucide.createIcons) { lucide.createIcons(); }
+            }
+        }
+
+        function renderSidebar() {
+            const navItems = [
+                { view: 'overview', icon: 'home', label: 'Overview Console', role: 'user' },
+                { view: 'flux', icon: 'zap', label: 'Flux Monitoring', role: 'user' },
+                { view: 'licenses', icon: 'key', label: 'Registered Keys', role: 'user' },
+                { view: 'license-creator', icon: 'plus-square', label: 'Create License', role: 'user' },
+                { view: 'admin-panel', icon: 'shield-check', label: 'Admin Panel', role: 'admin' },
+                { view: 'control-panel', icon: 'settings-2', label: 'Control Panel', role: 'admin' },
+                { view: 'system-keys', icon: 'lock-keyhole', label: 'System Keys', role: 'admin' },
+                { view: 'create-referral', icon: 'user-plus', label: 'Create Referral', role: 'admin' },
+                { view: 'manage-users', icon: 'users', label: 'Manage Users', role: 'admin' },
+                { view: 'settings', icon: 'settings', label: 'System Settings', role: 'user' },
+            ];
+
+            const sidebarList = document.getElementById('sidebarList');
+            if (!sidebarList) return;
+
+            sidebarList.innerHTML = navItems.map(item => {
+                if (!window.checkRole(item.role)) return '';
+                const isActive = item.view === window.dashboardView;
+                const activeClass = isActive ? 'active' : '';
+                return `
+                    <li>
+                        <a href="#" onclick="changeDashboardView('${item.view}')" data-view="${item.view}" class="sidebar-link ${activeClass} flex items-center space-x-3 p-3 rounded-lg font-medium neon-accent-border text-high-contrast hover:bg-white/10">
+                            <svg data-lucide="${item.icon}"></svg>
+                            <span>${item.label}</span>
+                        </a>
+                    </li>
+                `;
+            }).join('');
+        }
+
+        window.renderApp = () => {
+            renderSidebar();
+            document.getElementById('currentUserId').textContent = window.currentUserId;
+            document.getElementById('userRoleDisplay').textContent = window.userRole.toUpperCase();
+            document.getElementById('currentBalance').textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+            document.getElementById('sidebarBalance').textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+            document.getElementById('licenseBalanceDisplay').textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+            const contentContainers = document.querySelectorAll('.dashboard-content-section');
+            contentContainers.forEach(container => {
+                container.classList.add('hidden');
+            });
+            const activeContainer = document.getElementById(`content-${window.dashboardView}`);
+            if (activeContainer) activeContainer.classList.remove('hidden');
+            if (window.dashboardView === 'manage-users') { displayManagedUsers(); }
+            if (window.dashboardView === 'system-keys') { displaySystemKeys(); }
+            if (window.dashboardView === 'licenses') { displayRegisteredLicenses(); }
+            if (window.dashboardView === 'license-creator') { window.updateLicenseTotal(); }
+            if (window.dashboardView === 'create-referral') { displayReferralCodes(); }
+            
+            // Render settings data to update placeholder text
+            if (window.dashboardView === 'settings') {
+                const emailDisplay = document.getElementById('userEmailDisplay');
+                const statusDisplay = document.getElementById('referralStatus');
+                if (emailDisplay) {
+                    emailDisplay.textContent = window.userEmail || 'UID not loaded...';
+                }
+                if (statusDisplay) {
+                    statusDisplay.textContent = window.userRole.toUpperCase() + ' (Source)';
+                }
+            }
+
+
+            if (typeof lucide !== 'undefined' && lucide.createIcons) { lucide.createIcons(); }
+        };
+
+        window.changeDashboardView = (newView) => {
+            window.dashboardView = newView;
+            window.renderApp();
+        };
+
+        function renderGameOptions() {
+            const gameSelect = document.getElementById('license-game');
+            if (!gameSelect) return;
+            gameSelect.innerHTML = GAMES.map((game, index) => `
+                <option value="${game.package}" ${index === 0 ? 'selected' : ''}>
+                    ${game.name}
+                </option>
+            `).join('');
+        }
+
+        function renderDurationOptions() {
+            const durationSelect = document.getElementById('license-duration');
+            if (!durationSelect) return;
+            durationSelect.innerHTML = LICENSE_OPTIONS.map((option, index) => `
+                <option value="${option.id}" ${index === 0 ? 'selected' : ''}>
+                    ${option.duration} - ₹${option.price.toFixed(2)}/Device
+                </option>
+            `).join('');
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            renderGameOptions();
+            renderDurationOptions();
+            if (loadSession()) {
+                // Default to licenses view if none specified
+                window.dashboardView = 'licenses'; 
+                window.loadInitialData();
+            }
+        });
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0c0812;
+            overflow-x: hidden;
+        }
+        .primary {
+            color: #00E5FF;
+        }
+        .accent-purple {
+            color: #5a5aff;
+        }
+        .cyber-pink {
+            color: #FF00A6;
+        }
+        .contrast-cyan {
+            color: #00FFFF;
+        }
+        /* FULL RESTORED CSS START */
+        .futuristic-bg {
+            position: relative;
+            background: radial-gradient(circle at center, #1a0f28 0%, #0c0812 80%);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        .futuristic-bg::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.05) 1px, transparent 1px, transparent 3px);
+            opacity: 0.1;
+            z-index: 0;
+            pointer-events: none;
+        }
+        .neon-logo {
+            color: #fff;
+            text-shadow:
+                0 0 2px #fff,
+                0 0 10px rgba(255, 0, 166, 0.7),
+                0 0 20px rgba(0, 229, 255, 0.6),
+                0 4px 8px rgba(0, 0, 0, 0.8);
+        }
+        .dashboard-panel {
+            background-color: rgba(12, 8, 18, 0.95);
+            backdrop-filter: blur(25px);
+        }
+        .widget-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(25px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 0 10px rgba(0, 229, 255, 0.4);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .widget-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 0 20px rgba(255, 0, 166, 0.8);
+        }
+        .text-high-contrast {
+            text-shadow: 0 0 2px rgba(0, 0, 0, 0.9), 0 0 5px rgba(255, 255, 255, 0.3);
+        }
+        @keyframes button-pulse-glow {
+            0% {
+                box-shadow: 0 0 10px rgba(0, 229, 255, 0.5);
+            }
+            50% {
+                box-shadow: 0 0 20px rgba(255, 0, 166, 0.7);
+            }
+            100% {
+                box-shadow: 0 0 10px rgba(0, 229, 255, 0.5);
+            }
+        }
+        .glowing-button {
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+            background-image: linear-gradient(to right, #00E5FF, #FF00A6, #3b82f6);
+            background-size: 300% auto;
+            animation: button-pulse-glow 3s infinite alternate;
+            z-index: 1;
+        }
+        .glowing-button:hover {
+            background-position: center center;
+            transform: translateY(-3px) scale(1.03);
+            box-shadow: 0 15px 40px rgba(0, 229, 255, 0.9);
+        }
+        .glowing-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            animation: none;
+            box-shadow: none;
+        }
+        .sidebar-link {
+            transition: all 0.2s;
+            position: relative;
+            overflow: hidden;
+            color: #ccc;
+        }
+        .sidebar-link:hover {
+            color: #00E5FF;
+        }
+        .sidebar-link.active {
+            color: #FF00A6;
+            background-color: rgba(255, 0, 166, 0.1);
+            border-left: 4px solid #FF00A6;
+        }
+        .custom-select-bg {
+            background-color: rgba(255, 255, 255, 0.05);
+            color: #fff;
+        }
+        .custom-select-bg option {
+            background-color: #0c0812;
+            color: #fff;
+        }
+        /* FULL RESTORED CSS END */
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'primary': '#00E5FF',
+                        'primary-dark': '#00BFFF',
+                        'accent-purple': '#5a5aff',
+                        'cyber-pink': '#FF00A6',
+                        'contrast-cyan': '#00FFFF',
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+
+<body class="futuristic-bg">
+
+    <div id="confirmationModal" class="fixed inset-0 bg-black/80 flex items-center justify-center z-50 hidden">
+        <div id="modalContent"
+            class="bg-white p-8 rounded-xl shadow-2xl max-w-sm w-full text-center transition-colors duration-300">
+            <div class="text-6xl mb-4">
+                <svg id="modalAlertIcon" data-lucide="alert-triangle" class="inline w-12 h-12"></svg>
+            </div>
+            <h3 id="modalTitle" class="text-2xl font-semibold mb-2">Are you sure?</h3>
+            <p id="modalMessage" class="mb-6">You won't be able to revert this!</p>
+            <div id="modalButtonsDefault" class="flex justify-center space-x-4">
+                <button id="confirmYes"
+                    class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">
+                    Yes Do
+                </button>
+                <button id="confirmCancel"
+                    class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="min-h-screen flex flex-col">
+
+        <header
+            class="h-16 flex items-center justify-between px-6 border-b border-gray-700/50 dashboard-panel sticky top-0 z-20">
+            <div class="flex items-center space-x-4">
+                <h1 class="neon-logo text-xl font-bold tracking-wider">Ztrax Console</h1>
+                <span class="text-xs text-green-400 tracking-widest text-high-contrast">ONLINE // SECURE</span>
+            </div>
+
+            <div class="flex items-center space-x-4">
+                <button
+                    class="text-gray-300 hover:text-primary transition-colors text-high-contrast hidden sm:inline-block"
+                    onclick="showMessage('Invite functionality pending implementation.', 'success')">
+                    <svg data-lucide="user-plus" class="inline w-5 h-5 mr-1"></svg>
+                    Invite Key
+                </button>
+                <button onclick="logout()"
+                    class="glowing-button bg-red-600/30 text-red-400 px-3 py-1 rounded-lg text-sm font-semibold hover:bg-red-500/50">
+                    <svg data-lucide="log-out" class="inline w-4 h-4 mr-1"></svg>
+                    <span class="text-high-contrast">Logout</span>
+                </button>
+            </div>
+        </header>
+
+        <div id="dashboardMessage"
+            class="p-3 text-sm text-center fixed top-16 left-1/2 -translate-x-1/2 w-full max-w-sm rounded-b-lg hidden z-30 border border-t-0">
+        </div>
+
+
+        <div class="flex flex-1 overflow-hidden">
+
+            <nav
+                class="w-64 border-r border-gray-700/50 dashboard-panel p-4 hidden md:block flex-shrink-0 overflow-y-auto">
+                <ul id="sidebarList" class="space-y-2">
+                </ul>
+
+                <div class="mt-8 pt-4 border-t border-gray-700/50">
+                    <p class="text-xs text-gray-500 uppercase tracking-wider text-high-contrast">Current User ID:</p>
+                    <p id="currentUserId" class="text-sm text-primary font-mono truncate mt-1 text-high-contrast">---
+                    </p>
+
+                    <p class="text-xs text-gray-500 uppercase tracking-wider text-high-contrast mt-2">Role: <span
+                            id="userRoleDisplay" class="text-cyber-pink font-semibold">---</span></p>
+
+                    <p class="text-xs text-gray-500 uppercase tracking-wider text-high-contrast mt-2">Balance:</p>
+                    <p id="sidebarBalance" class="text-lg text-green-400 font-mono text-high-contrast">---</p>
+                </div>
+            </nav>
+
+            <main class="flex-1 overflow-y-auto p-6 md:p-10">
+
+                <section id="content-overview" class="dashboard-content-section">
+                    <h2
+                        class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-cyber-pink/50 pb-2">
+                        System Overview</h2>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+
+                        <div class="widget-card rounded-xl p-6">
+                            <span class="text-sm font-medium text-gray-400 uppercase text-high-contrast">Available
+                                Balance</span>
+                            <p class="text-3xl text-green-400 mt-2 font-mono text-high-contrast shadow-green"
+                                id="currentBalance">---</p>
+                            <p class="text-xs text-gray-500 mt-1 text-high-contrast">Admin/Owner allocated funds</p>
+                        </div>
+
+                        <div class="widget-card rounded-xl p-6">
+                            <div class="flex items-center justify-between">
+                                <span class="text-sm font-medium text-gray-400 uppercase text-high-contrast">System
+                                    Health</span>
+                                <div class="w-3 h-3 rounded-full bg-green-500 shadow-md shadow-green-500/50"></div>
+                            </div>
+                            <p class="text-3xl text-white mt-2 font-mono text-high-contrast">100% Operational</p>
+                            <p class="text-xs text-gray-500 mt-1 text-high-contrast">Status check: 0.04ms latency</p>
+                        </div>
+
+                        <div class="widget-card rounded-xl p-6">
+                            <span class="text-sm font-medium text-gray-400 uppercase text-high-contrast">Active Key
+                                Count</span>
+                            <p class="text-3xl text-primary mt-2 font-mono text-high-contrast shadow-cyan"><span
+                                    id="activeKeyCount">---</span></p>
+                            <p class="text-xs text-gray-500 mt-1 text-high-contrast">User's private key count</p>
+                        </div>
+
+                        <div class="widget-card rounded-xl p-6">
+                            <span class="text-sm font-medium text-gray-400 uppercase text-high-contrast">Key Generation
+                                Rate</span>
+                            <p class="text-3xl text-cyber-pink mt-2 font-mono text-high-contrast shadow-pink"><span
+                                    id="keyRate">--</span> <span class="text-base text-gray-500">keys/min</span></p>
+                            <p class="text-xs text-gray-500 mt-1 text-high-contrast">Avg. throughput maintained (Public)
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="widget-card rounded-xl p-6 mt-10">
+                        <h3 class="text-xl font-semibold text-white mb-4 flex items-center text-high-contrast">
+                            <svg data-lucide="clipboard-list" class="w-5 h-5 mr-2 text-cyber-pink"></svg>
+                            Recent Key Activity Log
+                        </h3>
+                        <div class="overflow-x-auto text-gray-400">
+                            <table class="min-w-full divide-y divide-gray-700/50">
+                                <thead>
+                                    <tr
+                                        class="text-xs uppercase tracking-wider text-gray-500 text-high-contrast border-b border-primary/50">
+                                        <th class="py-3 text-left">Timestamp</th>
+                                        <th class="py-3 text-left">Key ID</th>
+                                        <th class="py-3 text-left">Status</th>
+                                        <th class="py-3 text-right">Location</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-800">
+                                    <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
+                                        <td class="py-3">20:31:02</td>
+                                        <td class="py-3 text-primary">K-1A4C</td>
+                                        <td class="py-3 text-green-400">ACTIVE</td>
+                                        <td class="py-3 text-right">EU-CENTRAL-01</td>
+                                    </tr>
+                                    <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
+                                        <td class="py-3">20:30:45</td>
+                                        <td class="py-3 text-primary">K-B99F</td>
+                                        <td class="py-3 text-yellow-400">PENDING</td>
+                                        <td class="py-3 text-right">ASIA-EAST-04</td>
+                                    </tr>
+                                    <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
+                                        <td class="py-3">20:29:11</td>
+                                        <td class="py-3 text-primary">K-2D3E</td>
+                                        <td class="py-3 text-red-400">REVOKED</td>
+                                        <td class="py-3 text-right">US-WEST-02</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="content-flux" class="dashboard-content-section hidden">
+                    <h2
+                        class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-cyber-pink/50 pb-2">
+                        Flux Monitoring & Diagnostics</h2>
+
+                    <div class="widget-card p-6 rounded-xl">
+                        <h3 class="text-xl font-semibold text-primary mb-4">Real-time Data Stream Analysis</h3>
+                        <p class="text-gray-400">This section would typically display dynamic charts (using a library
+                            like D3.js or Chart.js) showing API usage, latency, and system load, utilizing the **Cyan
+                            and Magenta** color palette for the data lines.</p>
+
+                        <div
+                            class="mt-6 p-4 border border-primary/50 bg-primary/10 rounded-lg text-center font-mono text-lg text-contrast-cyan">
+                            [ Placeholder for High-Fidelity Flux Graph ]
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+                        <div class="widget-card rounded-xl p-6">
+                            <span class="text-sm font-medium text-gray-400 uppercase text-high-contrast">Average
+                                Latency</span>
+                            <p class="text-3xl text-white mt-2 font-mono text-high-contrast">28 <span
+                                    class="text-base text-gray-500">ms</span></p>
+                        </div>
+                        <div class="widget-card rounded-xl p-6">
+                            <span class="text-sm font-medium text-gray-400 uppercase text-high-contrast">Error
+                                Rate</span>
+                            <p class="text-3xl text-cyber-pink mt-2 font-mono text-high-contrast">0.12<span
+                                    class="text-base text-gray-500">%</span></p>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="content-licenses" class="dashboard-content-section hidden">
+                    <h2 class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-primary/50 pb-2">
+                        Registered Keys & License Management</h2>
+
+                    <div class="widget-card rounded-xl p-6">
+                        <div class="flex justify-between items-center mb-6">
+                            <h3 class="text-xl font-semibold text-white flex items-center">
+                                <svg data-lucide="key" class="w-5 h-5 mr-2 text-cyber-pink"></svg>
+                                Your Generated Game Licenses
+                            </h3>
+                            <button onclick="changeDashboardView('license-creator')"
+                                class="glowing-button text-sm px-4 py-2 rounded-lg">
+                                <svg data-lucide="plus" class="inline w-4 h-4 mr-1"></svg>
+                                <span class="text-high-contrast">Create New License</span>
+                            </button>
+                        </div>
+
+                        <div class="overflow-x-auto text-gray-400">
+                            <table class="min-w-full divide-y divide-gray-700/50">
+                                <thead>
+                                    <tr
+                                        class="text-xs uppercase tracking-wider text-gray-500 text-high-contrast border-b border-primary/50">
+                                        <th class="py-3 text-left"># ID</th>
+                                        <th class="py-3 text-left">Game</th>
+                                        <th class="py-3 text-left">User Keys</th>
+                                        <th class="py-3 text-left">Duration</th>
+                                        <th class="py-3 text-left">Expires</th>
+                                        <th class="py-3 text-right">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="registeredLicensesTableBody" class="divide-y divide-gray-800">
+                                    </tbody>
+                            </table>
+                            <p class="text-xs text-gray-600 mt-4">API Keys are now listed as Registered Keys/Licenses.
+                            </p>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="content-admin-panel" class="dashboard-content-section hidden">
+                    <h2
+                        class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-cyber-pink/50 pb-2">
+                        Admin Panel</h2>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <div class="widget-card rounded-xl p-6">
+                            <h3 class="text-xl font-semibold text-primary mb-4">Global Metrics Reset</h3>
+                            <p class="text-gray-400 text-sm">Reset public metrics (Key Generation Rate, etc.) to default
+                                values. Requires Admin authorization.</p>
+                            <button class="glowing-button text-sm px-4 py-2 mt-4 rounded-lg bg-red-600/30">
+                                RESET GLOBAL DATA
+                            </button>
+                        </div>
+                        <div class="widget-card rounded-xl p-6">
+                            <h3 class="text-xl font-semibold text-cyber-pink mb-4">System Announcements</h3>
+                            <p class="text-gray-400 text-sm">Broadcast urgent messages across all user dashboards.</p>
+                            <button class="glowing-button text-sm px-4 py-2 mt-4 rounded-lg">
+                                EDIT BROADCAST
+                            </button>
+                        </div>
+
+                        <div class="widget-card rounded-xl p-6 border-red-500/50 border-2">
+                            <h3 class="text-xl font-semibold text-red-400 mb-4">CRITICAL: Global Key Wipe</h3>
+                            <p class="text-gray-400 text-sm mb-4">Owner only: Revoke ALL active Licenses across the
+                                entire platform. **Login access remains.**</p>
+
+                            ${window.userRole === 'owner' ? `
+                            <button onclick="globalExternalKeyWipe()"
+                                class="glowing-button w-full text-sm px-4 py-2 rounded-lg bg-red-700/80 hover:bg-red-700">
+                                <span class="text-high-contrast">OWNER: GLOBAL LICENSE WIPE</span>
+                            </button>` : `
+                            <p class="text-red-500 text-xs text-center">OWNER PERMISSION REQUIRED</p>
+                            `}
+                        </div>
+                    </div>
+                </section>
+
+                <section id="content-control-panel" class="dashboard-content-section hidden">
+                    <h2 class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-primary/50 pb-2">
+                        Control Panel</h2>
+                    <div class="widget-card rounded-xl p-6">
+                        <h3 class="text-xl font-semibold text-primary mb-4">Service Status Toggle</h3>
+                        <p class="text-gray-400 mb-4 text-sm">Enable or disable core Ztrax services globally.</p>
+
+                        <div class="space-y-4">
+                            <label
+                                class="flex items-center justify-between p-3 widget-card rounded-lg border-primary/30 cursor-pointer">
+                                <span class="font-semibold text-white">Key Generation Service</span>
+                                <input type="checkbox"
+                                    class="form-checkbox h-5 w-5 text-cyber-pink bg-gray-700 rounded border-gray-600 focus:ring-cyber-pink"
+                                    checked>
+                            </label>
+                            <label
+                                class="flex items-center justify-between p-3 widget-card rounded-lg border-primary/30 cursor-pointer">
+                                <span class="font-semibold text-white">Flux Monitoring Feed</span>
+                                <input type="checkbox"
+                                    class="form-checkbox h-5 w-5 text-cyber-pink bg-gray-700 rounded border-gray-600 focus:ring-cyber-pink">
+                            </label>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="content-system-keys" class="dashboard-content-section hidden">
+                    <h2 class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-primary/50 pb-2">
+                        System Key Management</h2>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div class="widget-card rounded-xl p-6 lg:col-span-1">
+                            <h3 class="text-xl font-semibold text-primary mb-4 flex items-center">
+                                <svg data-lucide="plus-circle" class="w-5 h-5 mr-2"></svg>
+                                Generate System Key
+                            </h3>
+                            <p class="text-gray-400 mb-4 text-sm">Create high-privilege keys for platform integrations
+                                or special partners.</p>
+
+                            <div class="space-y-4">
+                                <div>
+                                    <label for="system-key-name"
+                                        class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Key
+                                        Designation</label>
+                                    <input id="system-key-name" type="text" placeholder="e.g., Azure_Integration_01"
+                                        required
+                                        class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
+                                </div>
+                                <button onclick="generateSystemKey()"
+                                    class="glowing-button w-full text-sm px-4 py-3 rounded-lg mt-4">
+                                    <span class="text-high-contrast">ISSUE NEW SYSTEM KEY</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="widget-card rounded-xl p-6 lg:col-span-2">
+                            <h3 class="text-xl font-semibold text-white mb-4 flex items-center text-high-contrast">
+                                <svg data-lucide="list-checks" class="w-5 h-5 mr-2 text-cyber-pink"></svg>
+                                Generated System Key Status
+                            </h3>
+                            <div class="overflow-x-auto text-gray-400">
+                                <table class="min-w-full divide-y divide-gray-700/50">
+                                    <thead>
+                                        <tr
+                                            class="text-xs uppercase tracking-wider text-gray-500 text-high-contrast border-b border-primary/50">
+                                            <th class="py-3 text-left">Key (ID)</th>
+                                            <th class="py-3 text-left">Designation</th>
+                                            <th class="py-3 text-left">Created By</th>
+                                            <th class="py-3 text-left">Status</th>
+                                            <th class="py-3 text-right">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="systemKeysTableBody" class="divide-y divide-gray-800">
+                                        </tbody>
+
+                                </table>
+                            </div>
+                        </div>
+                </section>
+
+                <section id="content-create-referral" class="dashboard-content-section hidden">
+                    <h2
+                        class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-cyber-pink/50 pb-2">
+                        Create Referral Code</h2>
+
+                    <div class="widget-card rounded-xl p-6 max-w-lg mx-auto">
+                        <h3 class="text-xl font-semibold text-primary mb-4 flex items-center">
+                            <svg data-lucide="users" class="w-5 h-5 mr-2"></svg>
+                            Generate New Client Onboarding Code
+                        </h3>
+                        <p class="text-gray-400 mb-4 text-sm">Codes created here grant the specified balance and role
+                            upon user sign-up. Role max is **Admin**.</p>
+
+                        <form class="space-y-4" onsubmit="generateReferral(event)">
+
+                            <div>
+                                <label for="referral-balance"
+                                    class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Initial
+                                    Balance Allocation (₹)</label>
+                                <input id="referral-balance" type="number" step="0.01" value="0.00" min="0" required
+                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
+                            </div>
+
+                            <div>
+                                <label for="referral-role"
+                                    class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Max
+                                    Role Assigned by Code</label>
+                                <select id="referral-role" required
+                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
+                                    <option value="user">User (Basic Client)</option>
+                                    <option value="reseller">Reseller (Key Generation)</option>
+                                    <option value="admin">Admin (Max Available Role)</option>
+                                </select>
+                            </div>
+
+                            <button type="submit" class="glowing-button w-full text-sm px-4 py-3 rounded-lg mt-4">
+                                <span class="text-high-contrast">CREATE REFERRAL CODE</span>
+                            </button>
+                        </form>
+                    </div>
+
+                    <div class="widget-card rounded-xl p-6 mt-6">
+                        <h3 class="text-xl font-semibold text-white mb-4 flex items-center text-high-contrast">
+                            <svg data-lucide="list-checks" class="w-5 h-5 mr-2 text-cyber-pink"></svg>
+                            Active Referral Codes Log
+                        </h3>
+                        <div class="overflow-x-auto text-gray-400">
+                            <table class="min-w-full divide-y divide-gray-700/50">
+                                <thead>
+                                    <tr
+                                        class="text-xs uppercase tracking-wider text-gray-500 text-high-contrast border-b border-primary/50">
+                                        <th class="py-3 text-left">Code</th>
+                                        <th class="py-3 text-left">Balance</th>
+                                        <th class="py-3 text-left">Max Role</th>
+                                        <th class="py-3 text-left">Created By</th>
+                                        <th class="py-3 text-right">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="referralCodesTableBody" class="divide-y divide-gray-800">
+                                    </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="content-manage-users" class="dashboard-content-section hidden">
+                    <h2
+                        class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-cyber-pink/50 pb-2">
+                        Manage Users & Access (Admin/Owner)</h2>
+                    <div class="widget-card rounded-xl p-6">
+                        <h3 class="text-xl font-semibold text-primary mb-4">Client Access Control</h3>
+                        <p class="text-gray-400 mb-4 text-sm">Manage user roles, allocated balance, and **Application
+                            Login Access** for users who signed up with your referral code.</p>
+
+                        <div class="overflow-x-auto text-gray-400 mt-6">
+                            <table class="min-w-full divide-y divide-gray-700/50">
+                                <thead>
+                                    <tr
+                                        class="text-xs uppercase tracking-wider text-gray-500 text-high-contrast border-b border-primary/50">
+                                        <th class="py-3 text-left">User ID</th>
+                                        <th class="py-3 text-left">Email</th>
+                                        <th class="py-3 text-left">Role</th>
+                                        <th class="py-3 text-left">Referral</th>
+                                        <th class="py-3 text-left">Status</th>
+                                        <th class="py-3 text-right">Access Controls</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="managedUsersTableBody" class="divide-y divide-gray-800">
+                                    </tbody>
+                            </table>
+                            <p class="text-xs text-gray-600 mt-4">Note: Owner role has exclusive access to permanent
+                                deletion.</p>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="content-license-creator" class="dashboard-content-section hidden">
+                    <h2 class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-primary/50 pb-2">
+                        Create License</h2>
+                    <div class="widget-card rounded-xl p-6 max-w-lg mx-auto">
+                        <div
+                            class="p-3 mb-6 bg-white/10 rounded-lg flex justify-between items-center border border-primary/50">
+                            <span class="text-sm text-white font-medium">Total Balance:</span>
+                            <span id="licenseBalanceDisplay" class="text-lg text-green-400 font-mono">---</span>
+                        </div>
+
+                        <form class="space-y-4" onsubmit="generateLicenseKey(event)">
+                            <div>
+                                <label for="license-game"
+                                    class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Games</label>
+                                <select id="license-game" required onchange="updateLicenseTotal()"
+                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
+                                    </select>
+                            </div>
+
+                            <div>
+                                <label for="max-devices"
+                                    class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Max
+                                    Devices</label>
+                                <input id="max-devices" type="number" value="1" min="1" required
+                                    oninput="updateLicenseTotal()"
+                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
+                            </div>
+
+                            <div>
+                                <label for="license-duration"
+                                    class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Duration
+                                    Of Key</label>
+                                <select id="license-duration" required onchange="updateLicenseTotal()"
+                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
+                                    </select>
+                            </div>
+
+                            <div class="pt-4 flex justify-between items-center">
+                                <span class="text-white font-medium text-lg">Your Total Balance:</span>
+                                <span id="licenseTotalCost" class="text-lg font-mono text-green-400">---</span>
+                            </div>
+
+                            <button id="generateLicenseButton" type="submit"
+                                class="glowing-button w-full text-sm px-4 py-3 rounded-lg mt-4" disabled>
+                                <span class="text-high-contrast">GENERATE YOUR KEY</span>
+                            </button>
+                        </form>
+                    </div>
+                </section>
+
+                <section id="content-settings" class="dashboard-content-section hidden">
+                    <h2
+                        class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-cyber-pink/50 pb-2">
+                        System Settings</h2>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="widget-card rounded-xl p-6">
+                            <h3 class="text-xl font-semibold text-primary mb-4">Profile & Referral</h3>
+                            <p class="text-gray-400 text-sm">Update your public name and view your referral status.</p>
+
+                            <div class="mt-4 space-y-3">
+                                <div class="flex justify-between border-b border-gray-700/50 pb-2">
+                                    <span class="text-gray-500">Registered Email:</span>
+                                    <span class="text-white font-mono" id="userEmailDisplay">---</span>
+                                </div>
+                                <div class="flex justify-between border-b border-gray-700/50 pb-2">
+                                    <span class="text-gray-500">Referral Status:</span>
+                                    <span class="text-yellow-400 font-mono" id="referralStatus">---</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="widget-card rounded-xl p-6">
+                            <h3 class="text-xl font-semibold text-cyber-pink mb-4">Security Protocol</h3>
+                            <p class="text-gray-400 text-sm">Change your security credentials.</p>
+                            <button class="glowing-button text-sm px-4 py-2 mt-4 rounded-lg">
+                                Change Password
+                            </button>
+                        </div>
+                    </div>
+                </section>
+
+            </main>
+        </div>
+    </div>
+</body>
+
+</html>
