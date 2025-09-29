@@ -212,6 +212,17 @@
                 window.referredByStatus = data.referred_by_status || null;
                 if (document.getElementById('activeKeyCount')) { document.getElementById('activeKeyCount').textContent = data.active_keys ?? '0'; }
                 if (document.getElementById('keyRate')) { document.getElementById('keyRate').textContent = (data.key_rate ?? 0).toString(); }
+                const actBody = document.getElementById('recentActivityBody');
+                if (actBody && Array.isArray(data.recent_activity)) {
+                    actBody.innerHTML = data.recent_activity.map(a => `
+                        <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
+                            <td class="py-3">${new Date(a.ts).toLocaleTimeString()}</td>
+                            <td class="py-3 text-primary">#${a.license_id}</td>
+                            <td class="py-3 ${a.status === 'Active' ? 'text-green-400' : a.status === 'Issued' ? 'text-yellow-400' : 'text-red-400'}">${a.status.toUpperCase()}</td>
+                            <td class="py-3 text-right">—</td>
+                        </tr>
+                    `).join('');
+                }
 
                 window.renderApp();
                 if (window.dashboardView === 'licenses') displayRegisteredLicenses();
@@ -363,8 +374,9 @@
 
         window.keyAction = async (action, licenseId) => {
             if (action === 'check') {
-                const ok = await fetchAPI('check_license', { license_id: licenseId });
-                if (ok) { showMessage('License active/checked.', 'success'); displayRegisteredLicenses(); }
+                const deviceId = prompt('Enter device id (optional for log):', '') || null;
+                const data = await fetchAPI('check_license', { license_id: licenseId, device_id: deviceId });
+                if (data) { showMessage(`License active. Devices ${data.devices_used}/${data.max_devices}.`, 'success'); displayRegisteredLicenses(); }
                 return;
             }
             if (action === 'extend') {
@@ -1017,26 +1029,7 @@
                                         <th class="py-3 text-right">Location</th>
                                     </tr>
                                 </thead>
-                                <tbody class="divide-y divide-gray-800">
-                                    <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
-                                        <td class="py-3">20:31:02</td>
-                                        <td class="py-3 text-primary">K-1A4C</td>
-                                        <td class="py-3 text-green-400">ACTIVE</td>
-                                        <td class="py-3 text-right">EU-CENTRAL-01</td>
-                                    </tr>
-                                    <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
-                                        <td class="py-3">20:30:45</td>
-                                        <td class="py-3 text-primary">K-B99F</td>
-                                        <td class="py-3 text-yellow-400">PENDING</td>
-                                        <td class="py-3 text-right">ASIA-EAST-04</td>
-                                    </tr>
-                                    <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
-                                        <td class="py-3">20:29:11</td>
-                                        <td class="py-3 text-primary">K-2D3E</td>
-                                        <td class="py-3 text-red-400">REVOKED</td>
-                                        <td class="py-3 text-right">US-WEST-02</td>
-                                    </tr>
-                                </tbody>
+                                <tbody id="recentActivityBody" class="divide-y divide-gray-800"></tbody>
                             </table>
                         </div>
                     </div>

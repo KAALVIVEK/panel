@@ -137,7 +137,7 @@ try {
             deleteUserAccount($user_id, $role, $input['target_user_id']);
             break;
         case 'check_license':
-            checkLicense($user_id, $role, (int)($input['license_id'] ?? 0));
+            checkLicense($user_id, $role, (int)($input['license_id'] ?? 0), $input['device_id'] ?? null);
             break;
         case 'extend_license_time':
             extendLicenseTime($user_id, $role, (int)($input['license_id'] ?? 0), (float)($input['extra_days'] ?? 0));
@@ -197,13 +197,21 @@ function loadInitialData($user_id) {
     $stmt->close();
     $key_rate = round(($kr['c'] ?? 0) / 10, 2);
 
+    // Recent activity (10 most recent)
+    $actRes = $conn->query("SELECT created_at AS ts, license_id, status FROM licenses ORDER BY created_at DESC LIMIT 10");
+    $activity = [];
+    if ($actRes) {
+        while ($r = $actRes->fetch_assoc()) { $activity[] = $r; }
+    }
+
     $data = [
         'role' => $userData['role'],
         'balance' => (float)$userData['balance'],
         'active_keys' => (int)$keyData['active_keys'],
         'key_rate' => $key_rate,
         'email' => $userData['email'],
-        'referred_by_status' => $userData['referred_by_id']
+        'referred_by_status' => $userData['referred_by_id'],
+        'recent_activity' => $activity
     ];
 
     echo json_encode(['success' => true, 'data' => $data]);
@@ -347,7 +355,7 @@ function createLicense($user_id, $role, $input) {
     $expires = NULL; // start on first use (activation)
     
     $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) 
-            VALUES (?, ?, ?, ?, 0, 'Active', ?, ?)";
+            VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
     $stmt = $conn->prepare($sql);
     
     if (!$stmt->bind_param("sssiss", $key_string, $game_package, $duration, $max_devices, $user_id, $expires) || !$stmt->execute()) {
@@ -700,7 +708,7 @@ function loadLicenseInfo($user_id, $role, $license_id) {
 /**
  * Check/Activate a license. Starts expiry if not started.
  */
-function checkLicense($user_id, $role, $license_id) {
+function checkLicense($user_id, $role, $license_id, $device_id = null) {
     if (!checkRole($role, 'user')) {
         http_response_code(403);
         echo json_encode(['success' => false, 'message' => 'Authorization required.']);
@@ -709,10 +717,10 @@ function checkLicense($user_id, $role, $license_id) {
     $conn = connectDB();
     // Users can only check their own; admin/owner can check any
     if ($role === 'user') {
-        $stmt = $conn->prepare("SELECT expires FROM licenses WHERE license_id = ? AND creator_id = ? AND status != 'Banned'");
+        $stmt = $conn->prepare("SELECT expires, devices_used, max_devices, status FROM licenses WHERE license_id = ? AND creator_id = ? AND status != 'Banned'");
         $stmt->bind_param("is", $license_id, $user_id);
     } else {
-        $stmt = $conn->prepare("SELECT expires FROM licenses WHERE license_id = ? AND status != 'Banned'");
+        $stmt = $conn->prepare("SELECT expires, devices_used, max_devices, status FROM licenses WHERE license_id = ? AND status != 'Banned'");
         $stmt->bind_param("i", $license_id);
     }
     $stmt->execute();
@@ -724,8 +732,8 @@ function checkLicense($user_id, $role, $license_id) {
         $conn->close();
         return;
     }
+    // Activation on first login + increment devices_used up to max_devices
     if ($row['expires'] === NULL) {
-        // start now using duration-based hours mapping
         $stmt = $conn->prepare("SELECT duration FROM licenses WHERE license_id = ?");
         $stmt->bind_param("i", $license_id);
         $stmt->execute();
@@ -733,11 +741,20 @@ function checkLicense($user_id, $role, $license_id) {
         $stmt->close();
         $duration_id = $durRes ? $durRes['duration'] : 'opt2';
         $hours = getDurationHours($duration_id);
-        $stmt = $conn->prepare("UPDATE licenses SET expires = DATE_ADD(NOW(), INTERVAL ? HOUR) WHERE license_id = ?");
-        $stmt->bind_param("ii", $hours, $license_id);
+        $stmt = $conn->prepare("UPDATE licenses SET expires = DATE_ADD(NOW(), INTERVAL ? HOUR), status = 'Active', devices_used = LEAST(max_devices, devices_used + 1), linked_device_id = IFNULL(?, linked_device_id) WHERE license_id = ?");
+        $stmt->bind_param("isi", $hours, $device_id, $license_id);
+        $stmt->execute();
+    } else if ($row['devices_used'] < $row['max_devices']) {
+        $stmt = $conn->prepare("UPDATE licenses SET devices_used = devices_used + 1, linked_device_id = IFNULL(?, linked_device_id) WHERE license_id = ?");
+        $stmt->bind_param("si", $device_id, $license_id);
         $stmt->execute();
     }
-    echo json_encode(['success' => true, 'message' => 'License active.']);
+    // Return updated devices count
+    $res = $conn->prepare("SELECT devices_used, max_devices, status, expires FROM licenses WHERE license_id = ?");
+    $res->bind_param("i", $license_id);
+    $res->execute();
+    $info = $res->get_result()->fetch_assoc();
+    echo json_encode(['success' => true, 'data' => $info]);
     $conn->close();
 }
 
