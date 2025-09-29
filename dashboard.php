@@ -164,6 +164,17 @@ try {
         case 'owner_extend_all_licenses':
             ownerExtendAllLicenses($user_id, $role, (float)($input['extra_days'] ?? 0));
             break;
+
+        // Token-based API (for bots/external integrations)
+        case 'api_create_license':
+            apiCreateLicense($input);
+            break;
+        case 'api_reset_license':
+            apiResetLicense($input);
+            break;
+        case 'api_delete_license':
+            apiDeleteLicense($input);
+            break;
             
         default:
             http_response_code(400);
@@ -1089,6 +1100,130 @@ function ownerGenerateApiKey($user_id, $role, $amount) {
     } else {
         http_response_code(500);
         echo json_encode(['success' => false, 'message' => 'API key generation failed.']);
+    }
+    $conn->close();
+}
+
+/**
+ * API helpers: authenticate API key and retrieve allowed amount.
+ */
+function requireApiKey($input) {
+    $api_key = $input['api_key'] ?? '';
+    if (!$api_key) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'API key required.']);
+        exit();
+    }
+    $conn = connectDB();
+    $conn->query("CREATE TABLE IF NOT EXISTS api_keys (api_key CHAR(40) PRIMARY KEY, amount DECIMAL(10,2) NOT NULL, created_by_id VARCHAR(36) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
+    $stmt = $conn->prepare("SELECT amount FROM api_keys WHERE api_key = ?");
+    $stmt->bind_param("s", $api_key);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    if (!$row) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Invalid API key.']);
+        $conn->close();
+        exit();
+    }
+    return [$conn, (float)$row['amount']];
+}
+
+function apiCreateLicense($input) {
+    list($conn, $amount) = requireApiKey($input);
+    // For bot-created license, expect: creator_id, package_id, duration_id, max_devices, cost
+    $creator_id = $input['creator_id'] ?? null;
+    $package_id = $input['package_id'] ?? null;
+    $duration_id = $input['duration_id'] ?? null;
+    $max_devices = (int)($input['max_devices'] ?? 1);
+    $cost = (float)($input['cost'] ?? 0);
+    if (!$creator_id || !$package_id || !$duration_id || $cost <= 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Missing fields for license creation.']);
+        $conn->close();
+        return;
+    }
+    if ($cost > $amount) {
+        http_response_code(402);
+        echo json_encode(['success' => false, 'message' => 'API key amount insufficient.']);
+        $conn->close();
+        return;
+    }
+    $conn->begin_transaction();
+    // Deduct from user's balance and API key allowance
+    $stmt = $conn->prepare("SELECT balance FROM users WHERE user_id = ? FOR UPDATE");
+    $stmt->bind_param("s", $creator_id);
+    $stmt->execute();
+    $userBalance = $stmt->get_result()->fetch_assoc()['balance'] ?? 0;
+    $stmt->close();
+    if ($userBalance < $cost) {
+        $conn->rollback();
+        http_response_code(402);
+        echo json_encode(['success' => false, 'message' => 'User balance insufficient.']);
+        $conn->close();
+        return;
+    }
+    $key_string = bin2hex(random_bytes(11));
+    $expires = NULL;
+    $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
+    $stmt = $conn->prepare($sql);
+    if (!$stmt->bind_param("sssiss", $key_string, $package_id, $duration_id, $max_devices, $creator_id, $expires) || !$stmt->execute()) {
+        $conn->rollback();
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'API key license creation failed.']);
+        $conn->close();
+        return;
+    }
+    $newBalance = $userBalance - $cost;
+    $stmt = $conn->prepare("UPDATE users SET balance = ? WHERE user_id = ?");
+    $stmt->bind_param("ds", $newBalance, $creator_id);
+    $stmt->execute();
+    // Reduce API key allowance
+    $stmt = $conn->prepare("UPDATE api_keys SET amount = amount - ? WHERE api_key = ?");
+    $stmt->bind_param("ds", $cost, $input['api_key']);
+    $stmt->execute();
+    $conn->commit();
+    echo json_encode(['success' => true, 'data' => ['key_string' => $key_string, 'new_balance' => $newBalance]]);
+    $conn->close();
+}
+
+function apiResetLicense($input) {
+    list($conn, $amount) = requireApiKey($input);
+    $license_id = (int)($input['license_id'] ?? 0);
+    $creator_id = $input['creator_id'] ?? null;
+    if (!$license_id || !$creator_id) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Missing license_id/creator_id.']);
+        $conn->close();
+        return;
+    }
+    $stmt = $conn->prepare("UPDATE licenses SET devices_used = 0, linked_device_id = NULL WHERE license_id = ? AND creator_id = ?");
+    $stmt->bind_param("is", $license_id, $creator_id);
+    if ($stmt->execute() && $stmt->affected_rows > 0) {
+        echo json_encode(['success' => true]);
+    } else {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'License not found or unauthorized.']);
+    }
+    $conn->close();
+}
+
+function apiDeleteLicense($input) {
+    list($conn, $amount) = requireApiKey($input);
+    $license_id = (int)($input['license_id'] ?? 0);
+    if (!$license_id) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Missing license_id.']);
+        $conn->close();
+        return;
+    }
+    $stmt = $conn->prepare("DELETE FROM licenses WHERE license_id = ?");
+    $stmt->bind_param("i", $license_id);
+    if ($stmt->execute() && $stmt->affected_rows > 0) {
+        echo json_encode(['success' => true]);
+    } else {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'License not found.']);
     }
     $conn->close();
 }
