@@ -336,7 +336,7 @@
             if (role === 'owner') { showMessage('Cannot assign Owner role via referral code.', 'error'); return; }
             const newReferralData = await fetchAPI('create_referral', {
                 balance: balance,
-                role: role
+                max_role: role
             });
             if (newReferralData && newReferralData.code) {
                 showMessage(`Referral Code **${newReferralData.code}** generated (Max Role: ${role.toUpperCase()}).`, 'success');

@@ -446,7 +446,13 @@ function createReferral($user_id, $role, $input) {
     $conn = connectDB();
     $code = strtoupper(substr(bin2hex(random_bytes(4)), 0, 8));
     $balance = (float)($input['balance'] ?? 0);
-    $max_role = $input['role'];
+    $max_role = $input['max_role'] ?? 'user';
+    if (!in_array($max_role, ['user','reseller','admin'], true)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid max_role.']);
+        $conn->close();
+        return;
+    }
 
     $sql = "INSERT INTO referrals (code, initial_balance, max_role, creator_id) 
             VALUES (?, ?, ?, ?)";
