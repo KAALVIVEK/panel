@@ -90,14 +90,19 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload)
                     });
+                    const text = await response.text();
+                    let result;
+                    try { result = text ? JSON.parse(text) : null; } catch (_) { result = null; }
                     if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
+                        const msg = (result && (result.message || result.error)) || `HTTP ${response.status}`;
+                        showMessage(msg, 'error');
+                        return null;
                     }
-                    const result = await response.json();
-                    if (result.success) {
+                    if (result && result.success) {
                         return (typeof result.data !== 'undefined') ? result.data : true;
                     } else {
-                        showMessage(result.message || `API Error: ${action} failed.`, 'error');
+                        const msg = (result && result.message) || `API Error: ${action} failed.`;
+                        showMessage(msg, 'error');
                         return null;
                     }
                 } catch (error) {
@@ -105,7 +110,7 @@
                         await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
                     } else {
                         console.error(`[API] Final failure for action ${action}:`, error);
-                        showMessage(`Network error. Could not connect to Ztrax server.`, 'error');
+                        showMessage(error.message || `Network error. Request failed.`, 'error');
                         return null;
                     }
                 }
