@@ -11,7 +11,7 @@
 
     <script>
         // --- CORE CONFIGURATION ---
-        const PHP_API_ENDPOINT = 'https://puclone.unaux.com/api/dashboard.php';
+        const PHP_API_ENDPOINT = `${window.location.origin}/dashboard.php`;
 
         // Game List with required package names for validation
         const GAMES = [
@@ -95,7 +95,7 @@
                     }
                     const result = await response.json();
                     if (result.success) {
-                        return result.data;
+                        return (typeof result.data !== 'undefined') ? result.data : true;
                     } else {
                         showMessage(result.message || `API Error: ${action} failed.`, 'error');
                         return null;
@@ -224,7 +224,7 @@
             const selectedDuration = LICENSE_OPTIONS.find(opt => opt.id === durationId);
             const gameName = GAMES.find(g => g.package === packageId).name;
             showConfirmationDialog('Confirm License Generation',
-                `You are about to generate a **${gameName}** license key for **${selectedDuration.duration}** costing **₹${totalCost.toFixed(2)}}. Deduct balance?`,
+                `You are about to generate a **${gameName}** license key for **${selectedDuration.duration}** costing **₹${totalCost.toFixed(2)}**. Deduct balance?`,
                 async (confirmed) => {
                     if (!confirmed) {
                         showMessage('License generation cancelled.', 'error');
@@ -233,6 +233,7 @@
                     const newKeyData = await fetchAPI('create_license', {
                         package_id: packageId,
                         duration_id: durationId,
+                        days: selectedDuration.days,
                         max_devices: maxDevices,
                         cost: totalCost
                     });
@@ -328,14 +329,12 @@
             const role = document.getElementById('referral-role').value;
             if (balance <= 0 || isNaN(balance)) { showMessage('Please enter a valid balance amount.', 'error'); return; }
             if (role === 'owner') { showMessage('Cannot assign Owner role via referral code.', 'error'); return; }
-            const newReferralCode = generateRandomKey().substring(0, 8);
             const newReferralData = await fetchAPI('create_referral', {
-                code: newReferralCode,
                 balance: balance,
                 role: role
             });
-            if (newReferralData) {
-                showMessage(`Referral Code **${newReferralCode}** generated (Max Role: ${role.toUpperCase()}).`, 'success');
+            if (newReferralData && newReferralData.code) {
+                showMessage(`Referral Code **${newReferralData.code}** generated (Max Role: ${role.toUpperCase()}).`, 'success');
                 displayReferralCodes();
             }
         };
