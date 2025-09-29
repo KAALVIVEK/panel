@@ -686,7 +686,7 @@
             const sidebarList = document.getElementById('sidebarList');
             if (!sidebarList) return;
 
-            sidebarList.innerHTML = navItems.map(item => {
+            const html = navItems.map(item => {
                 if (!window.checkRole(item.role)) return '';
                 const isActive = item.view === window.dashboardView;
                 const activeClass = isActive ? 'active' : '';
@@ -699,6 +699,9 @@
                     </li>
                 `;
             }).join('');
+            sidebarList.innerHTML = html;
+            const mobileList = document.getElementById('mobileSidebarList');
+            if (mobileList) { mobileList.innerHTML = html; }
         }
 
         window.renderApp = () => {
@@ -708,6 +711,9 @@
             document.getElementById('currentBalance').textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
             document.getElementById('sidebarBalance').textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
             document.getElementById('licenseBalanceDisplay').textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+            const mId = document.getElementById('mobileCurrentUserId'); if (mId) mId.textContent = window.currentUserId;
+            const mRole = document.getElementById('mobileUserRoleDisplay'); if (mRole) mRole.textContent = window.userRole.toUpperCase();
+            const mBal = document.getElementById('mobileSidebarBalance'); if (mBal) mBal.textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
             const contentContainers = document.querySelectorAll('.dashboard-content-section');
             contentContainers.forEach(container => {
                 container.classList.add('hidden');
@@ -734,6 +740,14 @@
 
 
             if (typeof lucide !== 'undefined' && lucide.createIcons) { lucide.createIcons(); }
+        };
+
+        window.toggleMobileSidebar = (forceState) => {
+            const panel = document.getElementById('mobileSidebar');
+            const overlay = document.getElementById('mobileSidebarOverlay');
+            const open = forceState === true || (forceState !== false && panel.classList.contains('-translate-x-full'));
+            panel.classList.toggle('-translate-x-full', !open);
+            overlay.classList.toggle('hidden', !open);
         };
 
         window.changeDashboardView = (newView) => {
@@ -934,6 +948,9 @@
         <header
             class="h-16 flex items-center justify-between px-6 border-b border-gray-700/50 dashboard-panel sticky top-0 z-20">
             <div class="flex items-center space-x-4">
+                <button onclick="toggleMobileSidebar()" class="md:hidden text-gray-300 hover:text-primary transition-colors text-high-contrast">
+                    <svg data-lucide="menu" class="inline w-6 h-6"></svg>
+                </button>
                 <h1 class="neon-logo text-xl font-bold tracking-wider">Ztrax Console</h1>
                 <span class="text-xs text-green-400 tracking-widest text-high-contrast">ONLINE // SECURE</span>
             </div>
@@ -959,6 +976,25 @@
 
 
         <div class="flex flex-1 overflow-hidden">
+
+            <!-- Mobile Sidebar Overlay & Panel -->
+            <div id="mobileSidebarOverlay" onclick="toggleMobileSidebar(false)" class="fixed inset-0 bg-black/60 z-30 hidden md:hidden"></div>
+            <aside id="mobileSidebar" class="fixed inset-y-0 left-0 w-64 transform -translate-x-full transition-transform duration-200 z-40 md:hidden dashboard-panel border-r border-gray-700/50 p-4 overflow-y-auto">
+                <div class="flex items-center justify-between mb-4">
+                    <span class="text-sm text-gray-500 uppercase tracking-wider text-high-contrast">Navigation</span>
+                    <button onclick="toggleMobileSidebar(false)" class="text-gray-400 hover:text-white">
+                        <svg data-lucide="x" class="inline w-5 h-5"></svg>
+                    </button>
+                </div>
+                <ul id="mobileSidebarList" class="space-y-2"></ul>
+                <div class="mt-8 pt-4 border-t border-gray-700/50">
+                    <p class="text-xs text-gray-500 uppercase tracking-wider text-high-contrast">Current User ID:</p>
+                    <p class="text-sm text-primary font-mono truncate mt-1 text-high-contrast" id="mobileCurrentUserId">---</p>
+                    <p class="text-xs text-gray-500 uppercase tracking-wider text-high-contrast mt-2">Role: <span id="mobileUserRoleDisplay" class="text-cyber-pink font-semibold">---</span></p>
+                    <p class="text-xs text-gray-500 uppercase tracking-wider text-high-contrast mt-2">Balance:</p>
+                    <p id="mobileSidebarBalance" class="text-lg text-green-400 font-mono text-high-contrast">---</p>
+                </div>
+            </aside>
 
             <nav
                 class="w-64 border-r border-gray-700/50 dashboard-panel p-4 hidden md:block flex-shrink-0 overflow-y-auto">
