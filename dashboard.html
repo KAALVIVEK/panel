@@ -168,13 +168,13 @@
             if (oldCustomContainer) { oldCustomContainer.remove(); }
             const defaultButtons = document.getElementById('modalButtonsDefault');
             if (defaultButtons) { defaultButtons.classList.remove('hidden'); }
-            document.getElementById('modalContent').classList.remove('bg-gray-900/90', 'text-white', 'border-primary');
-            document.getElementById('modalContent').classList.add('bg-white', 'text-gray-800');
-            document.getElementById('modalAlertIcon').classList.remove('text-primary');
-            document.getElementById('modalAlertIcon').classList.add('text-orange-400');
+            document.getElementById('modalContent').classList.remove('bg-white', 'text-gray-800');
+            document.getElementById('modalContent').classList.add('bg-gray-900/90', 'text-white', 'border-primary');
+            document.getElementById('modalAlertIcon').classList.add('text-primary');
+            document.getElementById('modalAlertIcon').classList.remove('text-orange-400');
             document.getElementById('confirmYes').textContent = 'Yes Do';
-            document.getElementById('confirmYes').classList.remove('bg-primary/50', 'hover:bg-primary');
-            document.getElementById('confirmYes').classList.add('bg-blue-600', 'hover:bg-blue-700');
+            document.getElementById('confirmYes').classList.add('bg-primary/50', 'hover:bg-primary');
+            document.getElementById('confirmYes').classList.remove('bg-blue-600', 'hover:bg-blue-700');
             document.getElementById('confirmCancel').classList.remove('hidden');
             document.getElementById('confirmCancel').classList.add('bg-red-600');
             document.getElementById('confirmYes').onclick = () => {
@@ -622,8 +622,11 @@
                         <td class="py-3 text-primary">${ref.max_role.toUpperCase()}</td>
                         <td class="py-3">${ref.creator_id}...</td>
                         <td class="py-3 text-right whitespace-nowrap">
-                            <button onclick="copyToClipboard('${ref.code}')" class="text-contrast-cyan hover:text-cyber-pink transition-colors text-sm">
+                            <button onclick="copyToClipboard('${ref.code}')" class="text-contrast-cyan hover:text-cyber-pink transition-colors text-sm mr-2">
                                 <svg data-lucide="copy" class="inline w-4 h-4"></svg>
+                            </button>
+                            <button onclick="deleteReferral('${ref.code}')" class="text-red-400 hover:text-white transition-colors text-sm p-1 rounded bg-red-800/50">
+                                <svg data-lucide="trash" class="inline w-4 h-4"></svg>
                             </button>
                         </td>
                     </tr>
@@ -631,6 +634,7 @@
                 if (typeof lucide !== 'undefined' && lucide.createIcons) { lucide.createIcons(); }
             }
         }
+        
 
         function renderSidebar() {
             const navItems = [
