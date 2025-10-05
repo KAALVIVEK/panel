@@ -123,6 +123,14 @@ function hitRateLimit($conn, $rlKey, $limit, $windowSeconds) {
     }
 }
 
+function ensureUserEmailHashColumn($conn) {
+    // Ensure users.email_hash exists for encrypted email lookup
+    $res = $conn->query("SHOW COLUMNS FROM users LIKE 'email_hash'");
+    if ($res && $res->num_rows === 0) {
+        @$conn->query("ALTER TABLE users ADD COLUMN email_hash CHAR(64) NULL, ADD INDEX (email_hash)");
+    }
+}
+
 function handleRegistration($conn, $data) {
     $email = filter_var($data['email'] ?? '', FILTER_VALIDATE_EMAIL);
     $password = $data['password'] ?? '';
@@ -142,8 +150,14 @@ function handleRegistration($conn, $data) {
         return array("success" => false, "message" => "Weak password. Min 10 chars with upper, lower, digit, symbol.");
     }
 
-    $stmt = $conn->prepare("SELECT user_id FROM users WHERE email = ?");
-    $stmt->bind_param("s", $email);
+    // Prepare encrypted email + hash for lookup and storage
+    ensureUserEmailHashColumn($conn);
+    $email_clean = strtolower(trim($email));
+    $email_hash = hash('sha256', $email_clean);
+    $email_enc = encrypt_field($email);
+
+    $stmt = $conn->prepare("SELECT user_id FROM users WHERE email_hash = ?");
+    $stmt->bind_param("s", $email_hash);
     $stmt->execute();
     $stmt->store_result();
     if ($stmt->num_rows > 0) {
@@ -181,7 +195,7 @@ function handleRegistration($conn, $data) {
         // fixed: bind_param types corrected
         $stmt->bind_param("ssssdss", 
             $final_user_id, 
-            $email, 
+            $email_enc, 
             $password_hash, 
             $final_role, 
             $final_balance, 
@@ -192,6 +206,12 @@ function handleRegistration($conn, $data) {
         if (!$stmt->execute()) {
             throw new Exception("Database INSERT failed.");
         }
+        $stmt->close();
+
+        // Store email hash for lookup
+        $stmt = $conn->prepare("UPDATE users SET email_hash = ? WHERE user_id = ?");
+        $stmt->bind_param("ss", $email_hash, $final_user_id);
+        $stmt->execute();
         $stmt->close();
 
         $conn->commit();
@@ -215,14 +235,26 @@ function handleLogin($conn, $data) {
         return array("success" => false, "message" => "Invalid email or password format.");
     }
 
-    $stmt = $conn->prepare("SELECT user_id, password_hash, role, status FROM users WHERE email = ?");
-    $stmt->bind_param("s", $email);
+    ensureUserEmailHashColumn($conn);
+    $email_clean = strtolower(trim($email));
+    $email_hash = hash('sha256', $email_clean);
+
+    $stmt = $conn->prepare("SELECT user_id, password_hash, role, status FROM users WHERE email_hash = ?");
+    $stmt->bind_param("s", $email_hash);
     $stmt->execute();
     $result = $stmt->get_result();
 
     if ($result->num_rows !== 1) {
+        // Legacy fallback to plaintext email lookup
         $stmt->close();
-        return array("success" => false, "message" => "Invalid credentials provided.");
+        $stmt = $conn->prepare("SELECT user_id, password_hash, role, status FROM users WHERE email = ?");
+        $stmt->bind_param("s", $email);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($result->num_rows !== 1) {
+            $stmt->close();
+            return array("success" => false, "message" => "Invalid credentials provided.");
+        }
     }
 
     $user = $result->fetch_assoc();
@@ -230,13 +262,13 @@ function handleLogin($conn, $data) {
 
     // Account lockout check
     ensureAuthAuditTable($conn);
-    if (isLockedOut($conn, $email)) {
+    if (isLockedOut($conn, $email_clean)) {
         http_response_code(429);
         return array("success" => false, "message" => "Too many failed attempts. Try again later.");
     }
 
     if (!password_verify($password, $user['password_hash'])) {
-        auditAuth($conn, $email, false);
+        auditAuth($conn, $email_clean, false);
         return array("success" => false, "message" => "Invalid credentials provided.");
     }
     
@@ -245,7 +277,7 @@ function handleLogin($conn, $data) {
     }
 
     // Success: clear failure window
-    auditAuth($conn, $email, true);
+    auditAuth($conn, $email_clean, true);
 
     // Issue session token bound to IP and UA
     ensureSessionsTable($conn);

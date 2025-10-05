@@ -362,7 +362,7 @@ function loadInitialData($user_id) {
         'balance' => (float)$userData['balance'],
         'active_keys' => (int)$keyData['active_keys'],
         'key_rate' => $key_rate,
-        'email' => $userData['email'],
+        'email' => decrypt_field($userData['email']),
         'referred_by_status' => $userData['referred_by_id'],
         'recent_activity' => $activity
     ];
@@ -411,7 +411,7 @@ function loadLicenses($user_id, $role) {
     
     list($where_clause, $params) = getLicenseFilterSQL($user_id, $role);
     
-    $sql = "SELECT license_id, key_string, game_package, duration, max_devices, devices_used, status, created_at, expires FROM licenses $where_clause ORDER BY created_at DESC";
+    $sql = "SELECT license_id, key_string, game_package, duration, max_devices, devices_used, status, created_at, expires, linked_device_id FROM licenses $where_clause ORDER BY created_at DESC";
     
     $result = false;
     
@@ -441,6 +441,8 @@ function loadLicenses($user_id, $role) {
     $licenses = [];
     if ($result) {
         while ($row = $result->fetch_assoc()) {
+            $row['key_string'] = decrypt_field($row['key_string']);
+            $row['linked_device_id'] = decrypt_field($row['linked_device_id']);
             $licenses[] = $row;
         }
     }
@@ -530,7 +532,8 @@ function createLicense($user_id, $role, $input) {
         return;
     }
     
-    $key_string = bin2hex(random_bytes(11)); 
+    $key_string = bin2hex(random_bytes(11));
+    $enc_key_string = encrypt_field($key_string);
     $max_devices = (int)($input['max_devices'] ?? 1);
     $duration = $input['duration_id'];
     $game_package = $input['package_id'];
@@ -541,7 +544,7 @@ function createLicense($user_id, $role, $input) {
             VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
     $stmt = $conn->prepare($sql);
     
-    if (!$stmt->bind_param("sssiss", $key_string, $game_package, $duration, $max_devices, $user_id, $expires) || !$stmt->execute()) {
+    if (!$stmt->bind_param("sssiss", $enc_key_string, $game_package, $duration, $max_devices, $user_id, $expires) || !$stmt->execute()) {
         $error_message = $conn->error;
         $conn->rollback();
         http_response_code(500);
@@ -880,6 +883,7 @@ function loadLicenseInfo($user_id, $role, $license_id) {
     $res = $stmt->get_result();
     $row = $res ? $res->fetch_assoc() : null;
     if ($row) {
+        $row['key_string'] = decrypt_field($row['key_string']);
         echo json_encode(['success' => true, 'data' => $row]);
     } else {
         http_response_code(404);
@@ -924,12 +928,14 @@ function checkLicense($user_id, $role, $license_id, $device_id = null) {
         $stmt->close();
         $duration_id = $durRes ? $durRes['duration'] : 'opt2';
         $hours = getDurationHours($duration_id);
+        $enc_device = $device_id ? encrypt_field($device_id) : null;
         $stmt = $conn->prepare("UPDATE licenses SET expires = DATE_ADD(NOW(), INTERVAL ? HOUR), status = 'Active', devices_used = LEAST(max_devices, devices_used + 1), linked_device_id = IFNULL(?, linked_device_id) WHERE license_id = ?");
-        $stmt->bind_param("isi", $hours, $device_id, $license_id);
+        $stmt->bind_param("isi", $hours, $enc_device, $license_id);
         $stmt->execute();
     } else if ($row['devices_used'] < $row['max_devices']) {
+        $enc_device = $device_id ? encrypt_field($device_id) : null;
         $stmt = $conn->prepare("UPDATE licenses SET devices_used = devices_used + 1, linked_device_id = IFNULL(?, linked_device_id) WHERE license_id = ?");
-        $stmt->bind_param("si", $device_id, $license_id);
+        $stmt->bind_param("si", $enc_device, $license_id);
         $stmt->execute();
     }
     // Return updated devices count
@@ -937,6 +943,9 @@ function checkLicense($user_id, $role, $license_id, $device_id = null) {
     $res->bind_param("i", $license_id);
     $res->execute();
     $info = $res->get_result()->fetch_assoc();
+    if ($info) {
+        $info['linked_device_id'] = decrypt_field($info['linked_device_id'] ?? null);
+    }
     echo json_encode(['success' => true, 'data' => $info]);
     $conn->close();
 }
@@ -1168,6 +1177,7 @@ function loadSystemKeys($role) {
     $keys = [];
     if ($result) {
         while ($row = $result->fetch_assoc()) {
+            $row['key_string'] = decrypt_field($row['key_string']);
             $keys[] = $row;
         }
     }
@@ -1188,12 +1198,13 @@ function generateSystemKey($user_id, $role, $input) {
     
     $conn = connectDB();
     $key_string = strtoupper(substr(bin2hex(random_bytes(16)), 0, 32));
+    $enc_key_string = encrypt_field($key_string);
     $name = $input['name'] ?? 'SYSTEM';
 
     $sql = "INSERT INTO system_keys (key_string, name, created_by_id, status) 
             VALUES (?, ?, ?, 'Generated')";
     $stmt = $conn->prepare($sql);
-    $stmt->bind_param("sss", $key_string, $name, $user_id);
+    $stmt->bind_param("sss", $enc_key_string, $name, $user_id);
     
     if ($stmt->execute()) {
         http_response_code(201);
