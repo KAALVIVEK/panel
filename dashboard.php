@@ -131,7 +131,7 @@ if (!isset($input['action'])) {
 
 $action = $input['action'];
 // All actions require session auth except explicit API-key based actions
-$publicApiActions = ['api_create_license', 'api_reset_license', 'api_delete_license'];
+$publicApiActions = ['api_create_license', 'api_reset_license', 'api_delete_license', 'api_check_license', 'public_check_license'];
 if (!in_array($action, $publicApiActions, true)) {
     list($user_id, $role) = requireAuth();
 }
@@ -301,6 +301,12 @@ try {
             break;
         case 'api_delete_license':
             apiDeleteLicense($input);
+            break;
+        case 'api_check_license':
+            apiCheckLicense($input);
+            break;
+        case 'public_check_license':
+            publicCheckLicense($input);
             break;
             
         default:
@@ -1367,6 +1373,131 @@ function apiDeleteLicense($input) {
         http_response_code(404);
         echo json_encode(['success' => false, 'message' => 'License not found.']);
     }
+    $conn->close();
+}
+
+/**
+ * API: Check/activate a license by key_string for external clients (uses api_key auth).
+ * Request: { action: 'api_check_license', api_key, key_string, device_id }
+ */
+function apiCheckLicense($input) {
+    list($conn, $amount) = requireApiKey($input);
+    $key_string = $input['key_string'] ?? '';
+    $device_id = $input['device_id'] ?? null;
+    if (!$key_string) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Missing key_string.']);
+        $conn->close();
+        return;
+    }
+
+    $stmt = $conn->prepare("SELECT license_id, duration, max_devices, devices_used, status, expires FROM licenses WHERE key_string = ?");
+    $stmt->bind_param("s", $key_string);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'License not found.']);
+        $conn->close();
+        return;
+    }
+    if ($row['status'] === 'Banned' || $row['status'] === 'Deleted') {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'License is not active.']);
+        $conn->close();
+        return;
+    }
+    // Expiry check
+    if (!is_null($row['expires']) && strtotime($row['expires']) < time()) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'License expired.']);
+        $conn->close();
+        return;
+    }
+    // Activate or increment device usage
+    if ($row['expires'] === NULL) {
+        $hours = getDurationHours($row['duration'] ?? 'opt2');
+        $stmt = $conn->prepare("UPDATE licenses SET expires = DATE_ADD(NOW(), INTERVAL ? HOUR), status = 'Active', devices_used = LEAST(max_devices, devices_used + 1), linked_device_id = IFNULL(?, linked_device_id) WHERE license_id = ?");
+        $stmt->bind_param("isi", $hours, $device_id, $row['license_id']);
+        $stmt->execute();
+    } else if ((int)$row['devices_used'] < (int)$row['max_devices']) {
+        $stmt = $conn->prepare("UPDATE licenses SET devices_used = devices_used + 1, linked_device_id = IFNULL(?, linked_device_id) WHERE license_id = ?");
+        $stmt->bind_param("si", $device_id, $row['license_id']);
+        $stmt->execute();
+    } else {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Device limit reached.']);
+        $conn->close();
+        return;
+    }
+
+    // Return latest state
+    $stmt = $conn->prepare("SELECT devices_used, max_devices, status, expires FROM licenses WHERE license_id = ?");
+    $stmt->bind_param("i", $row['license_id']);
+    $stmt->execute();
+    $info = $stmt->get_result()->fetch_assoc();
+    echo json_encode(['success' => true, 'data' => $info]);
+    $conn->close();
+}
+
+/**
+ * Public: Check/activate a license by key_string for C++ client without api_key.
+ * Request: { action: 'public_check_license', key_string, device_id }
+ */
+function publicCheckLicense($input) {
+    $conn = connectDB();
+    $key_string = $input['key_string'] ?? '';
+    $device_id = $input['device_id'] ?? null;
+    if (!$key_string) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Missing key_string.']);
+        $conn->close();
+        return;
+    }
+    $stmt = $conn->prepare("SELECT license_id, duration, max_devices, devices_used, status, expires FROM licenses WHERE key_string = ?");
+    $stmt->bind_param("s", $key_string);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'License not found.']);
+        $conn->close();
+        return;
+    }
+    if ($row['status'] === 'Banned' || $row['status'] === 'Deleted') {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'License is not active.']);
+        $conn->close();
+        return;
+    }
+    if (!is_null($row['expires']) && strtotime($row['expires']) < time()) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'License expired.']);
+        $conn->close();
+        return;
+    }
+    if ($row['expires'] === NULL) {
+        $hours = getDurationHours($row['duration'] ?? 'opt2');
+        $stmt = $conn->prepare("UPDATE licenses SET expires = DATE_ADD(NOW(), INTERVAL ? HOUR), status = 'Active', devices_used = LEAST(max_devices, devices_used + 1), linked_device_id = IFNULL(?, linked_device_id) WHERE license_id = ?");
+        $stmt->bind_param("isi", $hours, $device_id, $row['license_id']);
+        $stmt->execute();
+    } else if ((int)$row['devices_used'] < (int)$row['max_devices']) {
+        $stmt = $conn->prepare("UPDATE licenses SET devices_used = devices_used + 1, linked_device_id = IFNULL(?, linked_device_id) WHERE license_id = ?");
+        $stmt->bind_param("si", $device_id, $row['license_id']);
+        $stmt->execute();
+    } else {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Device limit reached.']);
+        $conn->close();
+        return;
+    }
+    $stmt = $conn->prepare("SELECT devices_used, max_devices, status, expires FROM licenses WHERE license_id = ?");
+    $stmt->bind_param("i", $row['license_id']);
+    $stmt->execute();
+    $info = $stmt->get_result()->fetch_assoc();
+    echo json_encode(['success' => true, 'data' => $info]);
     $conn->close();
 }
 
