@@ -3,22 +3,12 @@
 // ZTRAX DASHBOARD API - SECURE PHP BACKEND
 // =========================================================================
 
-// Set headers for CORS and JSON response
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
-header("Content-Type: application/json; charset=UTF-8");
+require_once __DIR__ . '/config.php';
+emit_security_headers();
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit; }
 
-// Handle preflight OPTIONS request
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    exit(0);
-}
-
-// --- 1. DATABASE CONFIGURATION (LIVE CREDENTIALS) ---
-define('DB_HOST', 'sql108.ezyro.com');
-define('DB_USER', 'ezyro_40038768');
-define('DB_PASS', '13579780');
-define('DB_NAME', 'ezyro_40038768_vivek');
+// --- 1. DATABASE CONFIGURATION ---
+// Uses constants from config.php
 
 // --- 2. CORE UTILITIES ---
 
@@ -44,6 +34,71 @@ function checkRole($currentRole, $requiredRole) {
     return $roles[$currentRole] >= $roles[$requiredRole];
 }
 
+/**
+ * Auth helpers (Bearer token stored in DB sessions)
+ */
+function ensureSessionsTable($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS sessions (
+        token CHAR(64) PRIMARY KEY,
+        user_id VARCHAR(64) NOT NULL,
+        ip VARCHAR(45) DEFAULT NULL,
+        user_agent VARCHAR(255) DEFAULT NULL,
+        expires_at DATETIME NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX (user_id),
+        INDEX (expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function getAuthorizationHeader() {
+    if (isset($_SERVER['HTTP_AUTHORIZATION'])) {
+        return trim($_SERVER['HTTP_AUTHORIZATION']);
+    }
+    if (function_exists('apache_request_headers')) {
+        $headers = apache_request_headers();
+        if (isset($headers['Authorization'])) {
+            return trim($headers['Authorization']);
+        }
+    }
+    return null;
+}
+
+function requireAuth() {
+    $authHeader = getAuthorizationHeader();
+    if (!$authHeader || stripos($authHeader, 'Bearer ') !== 0) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Missing Bearer token.']);
+        exit();
+    }
+    $token = trim(substr($authHeader, 7));
+    $conn = connectDB();
+    ensureSessionsTable($conn);
+    $stmt = $conn->prepare("SELECT user_id FROM sessions WHERE token = ? AND expires_at > NOW()");
+    $stmt->bind_param("s", $token);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Invalid or expired token.']);
+        $conn->close();
+        exit();
+    }
+    $user_id = $row['user_id'];
+    $stmt = $conn->prepare("SELECT role, status FROM users WHERE user_id = ?");
+    $stmt->bind_param("s", $user_id);
+    $stmt->execute();
+    $u = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    $conn->close();
+    if (!$u || $u['status'] === 'Blocked') {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Account blocked or not found.']);
+        exit();
+    }
+    return [$user_id, $u['role']];
+}
+
 
 // --- 3. INPUT HANDLING ---
 $inputJSON = file_get_contents('php://input');
@@ -57,8 +112,11 @@ if (!isset($input['action'])) {
 }
 
 $action = $input['action'];
-$user_id = $input['user_id'] ?? null;
-$role = $input['role'] ?? null;
+// All actions require session auth except explicit API-key based actions
+$publicApiActions = ['api_create_license', 'api_reset_license', 'api_delete_license'];
+if (!in_array($action, $publicApiActions, true)) {
+    list($user_id, $role) = requireAuth();
+}
 
 // --- 4. API ROUTING ---
 try {
@@ -229,6 +287,7 @@ function loadInitialData($user_id) {
     }
 
     $data = [
+        'user_id' => $user_id,
         'role' => $userData['role'],
         'balance' => (float)$userData['balance'],
         'active_keys' => (int)$keyData['active_keys'],

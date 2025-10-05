@@ -302,17 +302,18 @@
                     const result = await fetchAPI('login_user', { email, password });
                     
                     if (result.success) {
-                        localStorage.setItem('ztrax_user_id', result.user_id);
-                        localStorage.setItem('ztrax_role', result.role);
-                        
+                        if (!result.token) {
+                            throw new Error('Login failed: token missing.');
+                        }
+                        localStorage.setItem('ztrax_auth_token', result.token);
+
                         let message = `[STATUS: AUTH_SUCCESS] Access granted. Redirecting to console...`;
                         messageBox.textContent = message;
                         messageBox.classList.add('bg-green-900/40', 'text-green-300', 'border-green-500/30');
 
-                        // FIX: Redirect using query parameters to ensure dashboard.html loads correctly on first attempt
                         setTimeout(() => {
-                            window.location.href = `dashboard.html?user_id=${result.user_id}&role=${result.role}`;
-                        }, 500); 
+                            window.location.href = `dashboard.html`;
+                        }, 500);
 
                     } else {
                         throw new Error(result.message || 'Login failed.');

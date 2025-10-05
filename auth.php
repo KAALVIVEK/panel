@@ -6,17 +6,9 @@
 // to prevent SQL Injection and protect user credentials.
 // =========================================================================
 
-header("Content-Type: application/json; charset=UTF-8");
-header("Access-Control-Allow-Origin: *"); // Allow access from your frontend URL
-header("Access-Control-Allow-Methods: POST");
-header("Access-Control-Max-Age: 3600");
-header("Access-Control-Allow-Headers: Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With");
-
-// --- 1. Database Configuration (MUST BE UPDATED) ---
-define('DB_HOST', 'sql108.ezyro.com');
-define('DB_USER', 'ezyro_40038768');
-define('DB_PASS', '13579780');
-define('DB_NAME', 'ezyro_40038768_vivek');
+require_once __DIR__ . '/config.php';
+emit_security_headers();
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit; }
 
 // --- 2. Input Handling and Routing ---
 $input_json = file_get_contents('php://input');
@@ -34,6 +26,17 @@ try {
     $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
     if ($conn->connect_error) {
         throw new Exception("Database connection failed: " . $conn->connect_error);
+    }
+    // Lightweight IP-based rate limit for auth endpoints
+    $client_ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    if (in_array($action, ['register_user', 'login_user'], true)) {
+        ensureRateLimitTable($conn);
+        if (hitRateLimit($conn, 'auth:' . $client_ip . ':' . $action, 10, 60)) {
+            http_response_code(429);
+            echo json_encode(['success' => false, 'message' => 'Too many requests. Please wait and try again.']);
+            $conn->close();
+            exit;
+        }
     }
     
     switch ($action) {
@@ -64,6 +67,57 @@ exit;
 // =========================================================================
 // AUTHENTICATION FUNCTIONS
 // =========================================================================
+
+function ensureSessionsTable($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS sessions (
+        token CHAR(64) PRIMARY KEY,
+        user_id VARCHAR(64) NOT NULL,
+        ip VARCHAR(45) DEFAULT NULL,
+        user_agent VARCHAR(255) DEFAULT NULL,
+        expires_at DATETIME NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX (user_id),
+        INDEX (expires_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function ensureRateLimitTable($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS rate_limits (
+        rl_key VARCHAR(128) PRIMARY KEY,
+        count INT NOT NULL DEFAULT 0,
+        window_start TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function hitRateLimit($conn, $rlKey, $limit, $windowSeconds) {
+    $stmt = $conn->prepare("SELECT count, UNIX_TIMESTAMP(window_start) AS ws FROM rate_limits WHERE rl_key = ?");
+    $stmt->bind_param("s", $rlKey);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $now = time();
+    if ($row) {
+        $ws = (int)$row['ws'];
+        if ($now - $ws >= $windowSeconds) {
+            $stmt = $conn->prepare("UPDATE rate_limits SET count = 1, window_start = FROM_UNIXTIME(?) WHERE rl_key = ?");
+            $stmt->bind_param("is", $now, $rlKey);
+            $stmt->execute();
+            return false;
+        } else {
+            if (((int)$row['count']) + 1 > $limit) {
+                return true;
+            }
+            $stmt = $conn->prepare("UPDATE rate_limits SET count = count + 1 WHERE rl_key = ?");
+            $stmt->bind_param("s", $rlKey);
+            $stmt->execute();
+            return false;
+        }
+    } else {
+        $stmt = $conn->prepare("INSERT INTO rate_limits (rl_key, count, window_start) VALUES (?, 1, FROM_UNIXTIME(?))");
+        $stmt->bind_param("si", $rlKey, $now);
+        $stmt->execute();
+        return false;
+    }
+}
 
 function handleRegistration($conn, $data) {
     $email = filter_var($data['email'] ?? '', FILTER_VALIDATE_EMAIL);
@@ -178,11 +232,22 @@ function handleLogin($conn, $data) {
         return array("success" => false, "message" => "Access denied. Your account has been blocked.");
     }
 
+    // Issue session token
+    ensureSessionsTable($conn);
+    $token = bin2hex(random_bytes(32));
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+    $ua = substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 250);
+    $ttl = (int)SESSION_TTL_SECONDS;
+    $stmt = $conn->prepare("INSERT INTO sessions (token, user_id, ip, user_agent, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? SECOND))");
+    $stmt->bind_param("ssssi", $token, $user['user_id'], $ip, $ua, $ttl);
+    $stmt->execute();
+
     http_response_code(200);
     return array(
-        "success" => true, 
-        "message" => "Login successful.", 
+        "success" => true,
+        "message" => "Login successful.",
         "user_id" => $user['user_id'],
-        "role" => $user['role']
+        "role" => $user['role'],
+        "token" => $token
     );
 }

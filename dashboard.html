@@ -32,62 +32,34 @@
         ];
 
         
-        function getQueryParams() {
-            const params = new URLSearchParams(window.location.search);
-            return {
-                id: params.get('user_id') || null,
-                role: params.get('role') || null
-            };
-        }
+        function getQueryParams() { return { id: null, role: null }; }
 
-        /** Loads session data from localStorage, falling back to URL parameters. */
+        /** Loads session token from localStorage; redirects to login if missing. */
         function loadSession() {
-            let userId = localStorage.getItem('ztrax_user_id');
-            let role = localStorage.getItem('ztrax_role');
-
-            if (!userId || !role) {
-                // Check URL parameters only if localStorage is empty (First load after login)
-                const params = getQueryParams();
-                if (params.id && params.role) {
-                    userId = params.id;
-                    role = params.role;
-                    // Store for persistence
-                    localStorage.setItem('ztrax_user_id', userId);
-                    localStorage.setItem('ztrax_role', role);
-                }
-            }
-
-            if (!userId || !role) {
-                // If credentials are still missing, redirect to login
+            const token = localStorage.getItem('ztrax_auth_token');
+            if (!token) {
                 window.location.href = './index.html';
                 return false;
             }
-
-            // Assign global window variables
-            window.currentUserId = userId;
-            window.userRole = role;
+            window.authToken = token;
             return true;
         }
 
         window.logout = () => {
-            // Clear credentials and redirect
-            localStorage.removeItem('ztrax_user_id');
-            localStorage.removeItem('ztrax_role');
+            localStorage.removeItem('ztrax_auth_token');
             window.location.href = './index.html';
         };
         
         async function fetchAPI(action, data = {}) {
-            const payload = {
-                action: action,
-                user_id: window.currentUserId,
-                role: window.userRole,
-                ...data
-            };
+            const payload = { action, ...data };
             for (let i = 0; i < 3; i++) {
                 try {
                     const response = await fetch(PHP_API_ENDPOINT, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${window.authToken}`
+                        },
                         body: JSON.stringify(payload)
                     });
                     const text = await response.text();
@@ -206,6 +178,7 @@
         window.loadInitialData = async () => {
             const data = await fetchAPI('load_initial_data');
             if (data) {
+                window.currentUserId = data.user_id || '---';
                 window.userRole = data.role || 'user';
                 window.userBalance = data.balance || 0.00;
                 window.userEmail = data.email || 'not-loaded@ztrax.com';
