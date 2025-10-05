@@ -73,7 +73,7 @@ function requireAuth() {
     $token = trim(substr($authHeader, 7));
     $conn = connectDB();
     ensureSessionsTable($conn);
-    $stmt = $conn->prepare("SELECT user_id FROM sessions WHERE token = ? AND expires_at > NOW()");
+    $stmt = $conn->prepare("SELECT user_id, ip, user_agent FROM sessions WHERE token = ? AND expires_at > NOW()");
     $stmt->bind_param("s", $token);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
@@ -84,6 +84,24 @@ function requireAuth() {
         $conn->close();
         exit();
     }
+    // Bind to IP and UA
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+    $ua = substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 250);
+    if (($row['ip'] ?? '') !== $ip || ($row['user_agent'] ?? '') !== $ua) {
+        // revoke session silently
+        $stmt = $conn->prepare("DELETE FROM sessions WHERE token = ?");
+        $stmt->bind_param("s", $token);
+        $stmt->execute();
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Session mismatch. Please login again.']);
+        $conn->close();
+        exit();
+    }
+    // Sliding TTL: extend expiry on activity
+    $ttl = (int)SESSION_TTL_SECONDS;
+    $stmt = $conn->prepare("UPDATE sessions SET expires_at = DATE_ADD(NOW(), INTERVAL ? SECOND) WHERE token = ?");
+    $stmt->bind_param("is", $ttl, $token);
+    $stmt->execute();
     $user_id = $row['user_id'];
     $stmt = $conn->prepare("SELECT role, status FROM users WHERE user_id = ?");
     $stmt->bind_param("s", $user_id);
@@ -119,7 +137,58 @@ if (!in_array($action, $publicApiActions, true)) {
 }
 
 // --- 4. API ROUTING ---
+// Lightweight rate-limiting per IP for dashboard actions
+function ensureRateLimitTable($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS rate_limits (
+        rl_key VARCHAR(128) PRIMARY KEY,
+        count INT NOT NULL DEFAULT 0,
+        window_start TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+function hitRateLimit($conn, $rlKey, $limit, $windowSeconds) {
+    $stmt = $conn->prepare("SELECT count, UNIX_TIMESTAMP(window_start) AS ws FROM rate_limits WHERE rl_key = ?");
+    $stmt->bind_param("s", $rlKey);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $now = time();
+    if ($row) {
+        $ws = (int)$row['ws'];
+        if ($now - $ws >= $windowSeconds) {
+            $stmt = $conn->prepare("UPDATE rate_limits SET count = 1, window_start = FROM_UNIXTIME(?) WHERE rl_key = ?");
+            $stmt->bind_param("is", $now, $rlKey);
+            $stmt->execute();
+            return false;
+        } else {
+            if (((int)$row['count']) + 1 > $limit) {
+                return true;
+            }
+            $stmt = $conn->prepare("UPDATE rate_limits SET count = count + 1 WHERE rl_key = ?");
+            $stmt->bind_param("s", $rlKey);
+            $stmt->execute();
+            return false;
+        }
+    } else {
+        $stmt = $conn->prepare("INSERT INTO rate_limits (rl_key, count, window_start) VALUES (?, 1, FROM_UNIXTIME(?))");
+        $stmt->bind_param("si", $rlKey, $now);
+        $stmt->execute();
+        return false;
+    }
+}
+
 try {
+    // Apply rate limiting to mutating actions
+    if (!in_array($action, ['load_initial_data','load_licenses','load_referrals','load_managed_users','load_system_keys','get_service_status'], true)) {
+        $conn = connectDB();
+        ensureRateLimitTable($conn);
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+        if (hitRateLimit($conn, 'dash:' . $ip . ':' . $action, 30, 60)) {
+            http_response_code(429);
+            echo json_encode(['success' => false, 'message' => 'Too many requests. Slow down.']);
+            $conn->close();
+            exit();
+        }
+        $conn->close();
+    }
     switch ($action) {
         case 'load_initial_data':
             loadInitialData($user_id);
@@ -236,12 +305,13 @@ try {
             
         default:
             http_response_code(400);
-            echo json_encode(['success' => false, 'message' => 'Unknown API action specified.']);
+            echo json_encode(['success' => false, 'message' => 'Request failed.']);
             break;
     }
 } catch (Exception $e) {
     http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Server Error: ' . $e->getMessage()]);
+    error_log('[API ERROR] ' . $e->getMessage());
+    echo json_encode(['success' => false, 'message' => 'Server error.']);
 }
 
 
@@ -1150,10 +1220,16 @@ function ownerGenerateApiKey($user_id, $role, $amount) {
         return;
     }
     $conn = connectDB();
-    $conn->query("CREATE TABLE IF NOT EXISTS api_keys (api_key CHAR(40) PRIMARY KEY, amount DECIMAL(10,2) NOT NULL, created_by_id VARCHAR(36) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
+    $conn->query("CREATE TABLE IF NOT EXISTS api_keys (
+        api_key_hash CHAR(64) PRIMARY KEY,
+        amount DECIMAL(10,2) NOT NULL,
+        created_by_id VARCHAR(36) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
     $api_key = bin2hex(random_bytes(20));
-    $stmt = $conn->prepare("INSERT INTO api_keys (api_key, amount, created_by_id) VALUES (?, ?, ?)");
-    $stmt->bind_param("sds", $api_key, $amount, $user_id);
+    $api_key_hash = hash('sha256', $api_key);
+    $stmt = $conn->prepare("INSERT INTO api_keys (api_key_hash, amount, created_by_id) VALUES (?, ?, ?)");
+    $stmt->bind_param("sds", $api_key_hash, $amount, $user_id);
     if ($stmt->execute()) {
         echo json_encode(['success' => true, 'data' => ['api_key' => $api_key, 'amount' => (float)$amount]]);
     } else {
@@ -1174,9 +1250,15 @@ function requireApiKey($input) {
         exit();
     }
     $conn = connectDB();
-    $conn->query("CREATE TABLE IF NOT EXISTS api_keys (api_key CHAR(40) PRIMARY KEY, amount DECIMAL(10,2) NOT NULL, created_by_id VARCHAR(36) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
-    $stmt = $conn->prepare("SELECT amount FROM api_keys WHERE api_key = ?");
-    $stmt->bind_param("s", $api_key);
+    $conn->query("CREATE TABLE IF NOT EXISTS api_keys (
+        api_key_hash CHAR(64) PRIMARY KEY,
+        amount DECIMAL(10,2) NOT NULL,
+        created_by_id VARCHAR(36) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    $api_key_hash = hash('sha256', $api_key);
+    $stmt = $conn->prepare("SELECT amount FROM api_keys WHERE api_key_hash = ?");
+    $stmt->bind_param("s", $api_key_hash);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     if (!$row) {
@@ -1238,8 +1320,9 @@ function apiCreateLicense($input) {
     $stmt->bind_param("ds", $newBalance, $creator_id);
     $stmt->execute();
     // Reduce API key allowance
-    $stmt = $conn->prepare("UPDATE api_keys SET amount = amount - ? WHERE api_key = ?");
-    $stmt->bind_param("ds", $cost, $input['api_key']);
+    $stmt = $conn->prepare("UPDATE api_keys SET amount = amount - ? WHERE api_key_hash = ?");
+    $api_key_hash = hash('sha256', $input['api_key']);
+    $stmt->bind_param("ds", $cost, $api_key_hash);
     $stmt->execute();
     $conn->commit();
     echo json_encode(['success' => true, 'data' => ['key_string' => $key_string, 'new_balance' => $newBalance]]);

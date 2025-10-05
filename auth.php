@@ -46,6 +46,9 @@ try {
         case 'login_user':
             $response = handleLogin($conn, $input_data);
             break;
+        case 'logout':
+            $response = handleLogout($conn);
+            break;
         default:
             $response = array("success" => false, "message" => "Invalid action requested.");
             http_response_code(400);
@@ -53,7 +56,8 @@ try {
     }
 
 } catch (Exception $e) {
-    $response = array("success" => false, "message" => "Server Error: " . $e->getMessage());
+    error_log('[AUTH ERROR] ' . $e->getMessage());
+    $response = array("success" => false, "message" => "Server error.");
     http_response_code(500);
 } finally {
     if (isset($conn)) {
@@ -133,9 +137,9 @@ function handleRegistration($conn, $data) {
         http_response_code(400);
         return array("success" => false, "message" => "Referral code is required for signup.");
     }
-    if (strlen($password) < 8) {
+    if (!isStrongPassword($password)) {
         http_response_code(400);
-        return array("success" => false, "message" => "Password must be at least 8 characters.");
+        return array("success" => false, "message" => "Weak password. Min 10 chars with upper, lower, digit, symbol.");
     }
 
     $stmt = $conn->prepare("SELECT user_id FROM users WHERE email = ?");
@@ -224,7 +228,15 @@ function handleLogin($conn, $data) {
     $user = $result->fetch_assoc();
     $stmt->close();
 
+    // Account lockout check
+    ensureAuthAuditTable($conn);
+    if (isLockedOut($conn, $email)) {
+        http_response_code(429);
+        return array("success" => false, "message" => "Too many failed attempts. Try again later.");
+    }
+
     if (!password_verify($password, $user['password_hash'])) {
+        auditAuth($conn, $email, false);
         return array("success" => false, "message" => "Invalid credentials provided.");
     }
     
@@ -232,7 +244,10 @@ function handleLogin($conn, $data) {
         return array("success" => false, "message" => "Access denied. Your account has been blocked.");
     }
 
-    // Issue session token
+    // Success: clear failure window
+    auditAuth($conn, $email, true);
+
+    // Issue session token bound to IP and UA
     ensureSessionsTable($conn);
     $token = bin2hex(random_bytes(32));
     $ip = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -250,4 +265,61 @@ function handleLogin($conn, $data) {
         "role" => $user['role'],
         "token" => $token
     );
+}
+
+function handleLogout($conn) {
+    $headers = getallheaders();
+    $auth = $headers['Authorization'] ?? $headers['authorization'] ?? '';
+    if (stripos($auth, 'Bearer ') !== 0) {
+        http_response_code(400);
+        return ["success" => true]; // idempotent
+    }
+    $token = trim(substr($auth, 7));
+    ensureSessionsTable($conn);
+    $stmt = $conn->prepare("DELETE FROM sessions WHERE token = ?");
+    $stmt->bind_param("s", $token);
+    $stmt->execute();
+    http_response_code(200);
+    return ["success" => true];
+}
+
+function ensureAuthAuditTable($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS auth_audit (
+        email VARCHAR(255) NOT NULL,
+        success TINYINT(1) NOT NULL,
+        ts TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX (email),
+        INDEX (ts)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function auditAuth($conn, $email, $success) {
+    $stmt = $conn->prepare("INSERT INTO auth_audit (email, success) VALUES (?, ?)");
+    $s = $success ? 1 : 0;
+    $stmt->bind_param("si", $email, $s);
+    $stmt->execute();
+}
+
+function isLockedOut($conn, $email) {
+    // 5 fails in 10 minutes => lockout for 15 minutes
+    $stmt = $conn->prepare("SELECT SUM(CASE WHEN success=0 THEN 1 ELSE 0 END) AS fails,
+        MIN(ts) AS first_ts
+        FROM auth_audit WHERE email = ? AND ts >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)");
+    $stmt->bind_param("s", $email);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $fails = (int)($row['fails'] ?? 0);
+    if ($fails >= 5) {
+        return true;
+    }
+    return false;
+}
+
+function isStrongPassword($pwd) {
+    if (strlen($pwd) < 10) return false;
+    $hasUpper = preg_match('/[A-Z]/', $pwd);
+    $hasLower = preg_match('/[a-z]/', $pwd);
+    $hasDigit = preg_match('/\d/', $pwd);
+    $hasSymbol = preg_match('/[^a-zA-Z\d]/', $pwd);
+    return $hasUpper && $hasLower && $hasDigit && $hasSymbol;
 }

@@ -45,7 +45,13 @@
             return true;
         }
 
-        window.logout = () => {
+        window.logout = async () => {
+            try {
+                await fetch('auth.php', { method: 'POST', headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${window.authToken}`
+                }, body: JSON.stringify({ action: 'logout' }) });
+            } catch (e) { /* ignore */ }
             localStorage.removeItem('ztrax_auth_token');
             window.location.href = './index.html';
         };
