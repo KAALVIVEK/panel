@@ -308,6 +308,9 @@ try {
         case 'public_check_license':
             publicCheckLicense($input);
             break;
+        case 'load_license_access_logs':
+            loadLicenseAccessLogs($user_id, $role, $input);
+            break;
             
         default:
             http_response_code(400);
@@ -1384,6 +1387,9 @@ function apiCheckLicense($input) {
     list($conn, $amount) = requireApiKey($input);
     $key_string = $input['key_string'] ?? '';
     $device_id = $input['device_id'] ?? null;
+    $device_name = $input['device_name'] ?? null;
+    $device_model = $input['device_model'] ?? null;
+    $device_brand = $input['device_brand'] ?? null;
     if (!$key_string) {
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => 'Missing key_string.']);
@@ -1437,6 +1443,9 @@ function apiCheckLicense($input) {
     $stmt->bind_param("i", $row['license_id']);
     $stmt->execute();
     $info = $stmt->get_result()->fetch_assoc();
+    // Log access
+    ensureAccessLogsTable($conn);
+    logLicenseAccess($conn, $row['license_id'], $key_string, $device_id, $device_name, $device_model, $device_brand);
     echo json_encode(['success' => true, 'data' => $info]);
     $conn->close();
 }
@@ -1449,6 +1458,9 @@ function publicCheckLicense($input) {
     $conn = connectDB();
     $key_string = $input['key_string'] ?? '';
     $device_id = $input['device_id'] ?? null;
+    $device_name = $input['device_name'] ?? null;
+    $device_model = $input['device_model'] ?? null;
+    $device_brand = $input['device_brand'] ?? null;
     if (!$key_string) {
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => 'Missing key_string.']);
@@ -1497,7 +1509,122 @@ function publicCheckLicense($input) {
     $stmt->bind_param("i", $row['license_id']);
     $stmt->execute();
     $info = $stmt->get_result()->fetch_assoc();
+    // Log access
+    ensureAccessLogsTable($conn);
+    logLicenseAccess($conn, $row['license_id'], $key_string, $device_id, $device_name, $device_model, $device_brand);
     echo json_encode(['success' => true, 'data' => $info]);
+    $conn->close();
+}
+
+/** Helpers: access logs and IP geo **/
+function getClientIp() {
+    $keys = ['HTTP_CF_CONNECTING_IP','HTTP_X_FORWARDED_FOR','HTTP_X_REAL_IP','REMOTE_ADDR'];
+    foreach ($keys as $k) {
+        if (!empty($_SERVER[$k])) {
+            $ipList = explode(',', $_SERVER[$k]);
+            $ip = trim($ipList[0]);
+            if (filter_var($ip, FILTER_VALIDATE_IP)) return $ip;
+        }
+    }
+    return '0.0.0.0';
+}
+
+function ensureAccessLogsTable($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS license_access_logs (
+        log_id INT AUTO_INCREMENT PRIMARY KEY,
+        license_id INT NOT NULL,
+        key_string VARCHAR(128) NOT NULL,
+        ip VARCHAR(45) NULL,
+        city VARCHAR(64) NULL,
+        region VARCHAR(64) NULL,
+        country VARCHAR(64) NULL,
+        device_id VARCHAR(191) NULL,
+        device_name VARCHAR(128) NULL,
+        device_model VARCHAR(128) NULL,
+        device_brand VARCHAR(128) NULL,
+        user_agent VARCHAR(255) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX (license_id), INDEX (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+function geoLookupIP($ip) {
+    $out = ['city' => null, 'region' => null, 'country' => null];
+    if ($ip === '127.0.0.1' || $ip === '::1' || $ip === '0.0.0.0') return $out;
+    $url = 'https://ipapi.co/' . urlencode($ip) . '/json/';
+    $ctx = stream_context_create(['http' => ['timeout' => 2]]);
+    $resp = @file_get_contents($url, false, $ctx);
+    if ($resp) {
+        $j = json_decode($resp, true);
+        if (is_array($j)) {
+            $out['city'] = $j['city'] ?? null;
+            $out['region'] = $j['region'] ?? null;
+            $out['country'] = $j['country_name'] ?? ($j['country'] ?? null);
+        }
+    }
+    return $out;
+}
+
+function logLicenseAccess($conn, $license_id, $key_string, $device_id, $device_name, $device_model, $device_brand) {
+    $ip = getClientIp();
+    $geo = geoLookupIP($ip);
+    $ua = substr($_SERVER['HTTP_USER_AGENT'] ?? '', 0, 250);
+    $stmt = $conn->prepare("INSERT INTO license_access_logs (license_id, key_string, ip, city, region, country, device_id, device_name, device_model, device_brand, user_agent) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+    $stmt->bind_param(
+        "issssssssss",
+        $license_id,
+        $key_string,
+        $ip,
+        $geo['city'],
+        $geo['region'],
+        $geo['country'],
+        $device_id,
+        $device_name,
+        $device_model,
+        $device_brand,
+        $ua
+    );
+    $stmt->execute();
+}
+
+/** Admin: load access logs for a license */
+function loadLicenseAccessLogs($user_id, $role, $input) {
+    if (!checkRole($role, 'admin')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin authorization required.']);
+        return;
+    }
+    $license_id = isset($input['license_id']) ? (int)$input['license_id'] : null;
+    $key_string = $input['key_string'] ?? null;
+    $limit = isset($input['limit']) ? max(1, (int)$input['limit']) : 50;
+    $conn = connectDB();
+    ensureAccessLogsTable($conn);
+
+    // Scope filter: owner sees all; admin sees managed users
+    $scopeWhere = '';
+    if ($role !== 'owner') {
+        // restrict to licenses created by admin or their referred users
+        $scopeWhere = " AND l.license_id IN (SELECT license_id FROM licenses WHERE creator_id IN (SELECT user_id FROM users WHERE referred_by_id = ? UNION SELECT ?))";
+    }
+
+    $sql = "SELECT l.log_id, l.license_id, l.key_string, l.ip, l.city, l.region, l.country, l.device_id, l.device_name, l.device_model, l.device_brand, l.user_agent, l.created_at
+            FROM license_access_logs l WHERE 1=1";
+    $params = [];
+    $types = '';
+    if ($license_id) { $sql .= " AND l.license_id = ?"; $types .= 'i'; $params[] = $license_id; }
+    if ($key_string) { $sql .= " AND l.key_string = ?"; $types .= 's'; $params[] = $key_string; }
+    if ($scopeWhere) { $sql .= $scopeWhere; $types .= 'ss'; $params[] = $user_id; $params[] = $user_id; }
+    $sql .= " ORDER BY l.created_at DESC LIMIT ?"; $types .= 'i'; $params[] = $limit;
+
+    $stmt = $conn->prepare($sql);
+    if ($types !== '') {
+        $stmt->bind_param($types, ...$params);
+    }
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $rows = [];
+    while ($r = $res->fetch_assoc()) { $rows[] = $r; }
+    echo json_encode(['success' => true, 'data' => $rows]);
     $conn->close();
 }
 

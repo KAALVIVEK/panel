@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>License Access Logs</title>
+  <style>
+    body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#0c0812; color:#e5e7eb; }
+    .card { max-width: 1000px; margin: 40px auto; background: #111827; border:1px solid #374151; border-radius: 12px; padding: 20px; }
+    input, select, button { padding: 8px 10px; border-radius: 8px; border: 1px solid #374151; background: #0b1220; color: #e5e7eb; }
+    button { background: #0ea5e9; border-color:#0284c7; cursor: pointer; }
+    button:hover { background:#38bdf8; }
+    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+    th, td { padding: 8px; border-bottom: 1px solid #1f2937; font-size: 12px; }
+    th { text-align: left; color:#93c5fd; }
+    .muted { color:#9ca3af; font-size:12px }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .row > * { flex:1 1 200px; }
+    .badge { padding:2px 6px; background:#1f2937; border-radius:6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2 style="margin:0 0 8px 0;">License Access Logs</h2>
+    <p class="muted" style="margin:0 0 12px 0;">Requires admin/owner token in localStorage (ztrax_auth_token). Use either License ID or Key String filter.</p>
+
+    <div class="row" style="margin-bottom:12px;">
+      <label>License ID<br /><input id="licenseId" type="number" placeholder="e.g., 123" /></label>
+      <label>Key String<br /><input id="keyString" type="text" placeholder="paste full key" /></label>
+      <label>Limit<br /><input id="limit" type="number" value="50" min="1" max="500" /></label>
+    </div>
+
+    <div class="row" style="margin-bottom:12px;">
+      <button id="fetchBtn">Fetch Logs</button>
+      <button id="copyCurlBtn" style="background:#10b981;border-color:#059669;">Copy as curl</button>
+      <span id="status" class="muted"></span>
+    </div>
+
+    <div style="overflow:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>License ID</th>
+            <th>Key</th>
+            <th>IP</th>
+            <th>City</th>
+            <th>Region</th>
+            <th>Country</th>
+            <th>Device ID</th>
+            <th>Device</th>
+            <th>User-Agent</th>
+          </tr>
+        </thead>
+        <tbody id="logsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const endpoint = 'dashboard.php';
+    const token = localStorage.getItem('ztrax_auth_token');
+
+    function setStatus(msg) { document.getElementById('status').textContent = msg || ''; }
+
+    async function fetchLogs() {
+      const licenseId = document.getElementById('licenseId').value.trim();
+      const keyString = document.getElementById('keyString').value.trim();
+      const limit = Math.max(1, Math.min(500, parseInt(document.getElementById('limit').value, 10) || 50));
+
+      if (!token) {
+        setStatus('Missing token - login first.');
+        return;
+      }
+
+      const payload = { action: 'load_license_access_logs', limit };
+      if (licenseId) payload.license_id = parseInt(licenseId, 10);
+      if (keyString) payload.key_string = keyString;
+
+      setStatus('Loading...');
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(payload)
+        });
+        const text = await res.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch(e) { setStatus('Bad JSON'); console.error(text); return; }
+        if (!res.ok || !data || !data.success) {
+          setStatus((data && data.message) || `HTTP ${res.status}`);
+          return;
+        }
+        renderRows(data.data || []);
+        setStatus(`Loaded ${ (data.data||[]).length } rows.`);
+      } catch (e) {
+        console.error(e);
+        setStatus('Network error');
+      }
+    }
+
+    function renderRows(rows) {
+      const body = document.getElementById('logsBody');
+      body.innerHTML = (rows || []).map(r => `
+        <tr>
+          <td>${escapeHtml(r.created_at||'')}</td>
+          <td><span class="badge">${escapeHtml(String(r.license_id||''))}</span></td>
+          <td class="muted">${escapeHtml(r.key_string||'')}</td>
+          <td>${escapeHtml(r.ip||'')}</td>
+          <td>${escapeHtml(r.city||'')}</td>
+          <td>${escapeHtml(r.region||'')}</td>
+          <td>${escapeHtml(r.country||'')}</td>
+          <td class="muted">${escapeHtml(r.device_id||'')}</td>
+          <td>${escapeHtml([r.device_brand, r.device_model, r.device_name].filter(Boolean).join(' ') )}</td>
+          <td class="muted">${escapeHtml(r.user_agent||'')}</td>
+        </tr>
+      `).join('');
+    }
+
+    function escapeHtml(s){ return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m])); }
+
+    function copyCurl() {
+      const licenseId = document.getElementById('licenseId').value.trim();
+      const keyString = document.getElementById('keyString').value.trim();
+      const limit = Math.max(1, Math.min(500, parseInt(document.getElementById('limit').value, 10) || 50));
+      const payload = { action: 'load_license_access_logs', limit };
+      if (licenseId) payload.license_id = parseInt(licenseId, 10);
+      if (keyString) payload.key_string = keyString;
+      const cmd = `curl -s -X POST '${location.origin}${location.pathname.replace(/\/[^/]*$/, '/')}${endpoint}' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer ${token||"<TOKEN>"}' \
+  --data '${JSON.stringify(payload)}'`;
+      navigator.clipboard.writeText(cmd).then(()=> setStatus('Copied curl command')).catch(()=> setStatus('Failed to copy'));
+    }
+
+    document.getElementById('fetchBtn').addEventListener('click', fetchLogs);
+    document.getElementById('copyCurlBtn').addEventListener('click', copyCurl);
+  </script>
+</body>
+</html>
