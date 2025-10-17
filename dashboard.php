@@ -130,6 +130,17 @@ try {
             ownerGenerateApiKey($user_id, $role, (float)($input['amount'] ?? 0));
             break;
 
+        // Brand pricing and manual license management
+        case 'get_brand_pricing':
+            getBrandPricing();
+            break;
+        case 'owner_set_brand_price':
+            ownerSetBrandPrice($user_id, $role, $input);
+            break;
+        case 'owner_add_manual_license':
+            ownerAddManualLicense($user_id, $role, $input);
+            break;
+
         case 'get_service_status':
             getServiceStatus();
             break;
@@ -346,7 +357,8 @@ function getServiceStatus() {
     $conn = connectDB();
     ensureServiceFlagsTable($conn);
     $res = $conn->query("SELECT value FROM service_flags WHERE flag='key_generation_enabled' LIMIT 1");
-    $enabled = ($res && $row = $res->fetch_assoc()) ? $row['value'] === '1' : true; // default enabled
+    // Default DISABLED unless explicitly enabled by owner
+    $enabled = ($res && $row = $res->fetch_assoc()) ? $row['value'] === '1' : false;
     echo json_encode(['success' => true, 'data' => ['key_generation_enabled' => $enabled]]);
     $conn->close();
 }
@@ -369,6 +381,7 @@ function ownerSetKeyGeneration($user_id, $role, $enabled) {
 
 /**
  * Generates a license key, deducts balance, and saves the record.
+ * Now gated behind the owner-controlled service flag `key_generation_enabled`.
  */
 function createLicense($user_id, $role, $input) {
     if (!checkRole($role, 'user')) {
@@ -376,15 +389,25 @@ function createLicense($user_id, $role, $input) {
         echo json_encode(['success' => false, 'message' => 'Authorization required to create license.']);
         return;
     }
-    
+
+    // Enforce owner toggle: disable random generation when service is off
+    $conn = connectDB();
+    ensureServiceFlagsTable($conn);
+    $res = $conn->query("SELECT value FROM service_flags WHERE flag='key_generation_enabled' LIMIT 1");
+    $isEnabled = ($res && $row = $res->fetch_assoc()) ? $row['value'] === '1' : false;
+    if (!$isEnabled) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Key generation is currently disabled by the owner.']);
+        $conn->close();
+        return;
+    }
+
     $cost = (float)($input['cost'] ?? 0);
     if ($cost <= 0) {
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => 'Invalid license cost.']);
         return;
     }
-
-    $conn = connectDB();
     
     $conn->begin_transaction();
     $stmt = $conn->prepare("SELECT balance FROM users WHERE user_id = ? FOR UPDATE");
@@ -428,6 +451,113 @@ function createLicense($user_id, $role, $input) {
     
     $conn->commit();
     echo json_encode(['success' => true, 'data' => ['key_string' => $key_string, 'new_balance' => $newBalance]]);
+    $conn->close();
+}
+
+/** Brand pricing storage (owner managed) **/
+function ensureBrandPricingTable($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS brand_pricing (
+        brand VARCHAR(64) NOT NULL,
+        duration_id VARCHAR(16) NOT NULL,
+        price DECIMAL(10,2) NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (brand, duration_id)
+    )");
+}
+
+/**
+ * Public: Get brand pricing matrix for all brands/durations.
+ */
+function getBrandPricing() {
+    $conn = connectDB();
+    ensureBrandPricingTable($conn);
+    $result = $conn->query("SELECT brand, duration_id, price FROM brand_pricing");
+    $pricing = [];
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $b = $row['brand'];
+            if (!isset($pricing[$b])) { $pricing[$b] = []; }
+            $pricing[$b][$row['duration_id']] = (float)$row['price'];
+        }
+    }
+    echo json_encode(['success' => true, 'data' => $pricing]);
+    $conn->close();
+}
+
+/**
+ * Owner: Set/Update price for a brand+duration.
+ */
+function ownerSetBrandPrice($user_id, $role, $input) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    $brand = trim($input['brand'] ?? '');
+    $duration_id = $input['duration_id'] ?? '';
+    $price = (float)($input['price'] ?? -1);
+    $validDur = in_array($duration_id, ['opt1','opt2','opt3','opt4','opt5','opt6','opt7'], true);
+    if ($brand === '' || !$validDur || $price < 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid brand/duration/price.']);
+        return;
+    }
+    $conn = connectDB();
+    ensureBrandPricingTable($conn);
+    $stmt = $conn->prepare("INSERT INTO brand_pricing (brand, duration_id, price) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE price = VALUES(price)");
+    $stmt->bind_param("ssd", $brand, $duration_id, $price);
+    if ($stmt->execute()) {
+        echo json_encode(['success' => true]);
+    } else {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Failed to update brand pricing.']);
+    }
+    $conn->close();
+}
+
+/**
+ * Owner: Manually add a license with a provided key string.
+ * Uses `game_package` column to store the brand label for display.
+ */
+function ownerAddManualLicense($user_id, $role, $input) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    $key_string = strtoupper(trim($input['key_string'] ?? ''));
+    $brand = trim($input['brand'] ?? '');
+    $duration = $input['duration_id'] ?? '';
+    $max_devices = (int)($input['max_devices'] ?? 1);
+    $validDur = in_array($duration, ['opt1','opt2','opt3','opt4','opt5','opt6','opt7'], true);
+    if ($key_string === '' || strlen($key_string) < 10 || $brand === '' || !$validDur || $max_devices < 1) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid input for manual license.']);
+        return;
+    }
+    $conn = connectDB();
+    // Ensure uniqueness of key_string
+    $stmt = $conn->prepare("SELECT 1 FROM licenses WHERE key_string = ? LIMIT 1");
+    $stmt->bind_param("s", $key_string);
+    $stmt->execute();
+    $exists = $stmt->get_result()->num_rows > 0;
+    $stmt->close();
+    if ($exists) {
+        http_response_code(409);
+        echo json_encode(['success' => false, 'message' => 'Key already exists. Choose a different key.']);
+        $conn->close();
+        return;
+    }
+    $expires = NULL;
+    $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
+    $stmt = $conn->prepare($sql);
+    if (!$stmt->bind_param("sssiss", $key_string, $brand, $duration, $max_devices, $user_id, $expires) || !$stmt->execute()) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Manual license insert failed: ' . $conn->error]);
+        $conn->close();
+        return;
+    }
+    echo json_encode(['success' => true, 'data' => ['key_string' => $key_string]]);
     $conn->close();
 }
 
@@ -1131,6 +1261,16 @@ function requireApiKey($input) {
 
 function apiCreateLicense($input) {
     list($conn, $amount) = requireApiKey($input);
+    // Respect owner key generation toggle: block random generation when disabled
+    ensureServiceFlagsTable($conn);
+    $res = $conn->query("SELECT value FROM service_flags WHERE flag='key_generation_enabled' LIMIT 1");
+    $isEnabled = ($res && $row = $res->fetch_assoc()) ? $row['value'] === '1' : false;
+    if (!$isEnabled) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Key generation is disabled by the owner.']);
+        $conn->close();
+        return;
+    }
     // For bot-created license, expect: creator_id, package_id, duration_id, max_devices, cost
     $creator_id = $input['creator_id'] ?? null;
     $package_id = $input['package_id'] ?? null;
