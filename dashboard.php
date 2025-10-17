@@ -408,6 +408,153 @@ function ownerSetKeyGeneration($user_id, $role, $enabled) {
 }
 
 /**
+ * Plans table helpers and CRUD endpoints
+ */
+function ensurePlansTable($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS license_plans (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        label VARCHAR(64) NOT NULL,
+        hours INT NOT NULL,
+        price DECIMAL(10,2) NOT NULL,
+        active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+}
+
+function seedDefaultPlansIfEmpty($conn) {
+    $res = $conn->query("SELECT COUNT(*) AS c FROM license_plans");
+    $row = $res ? $res->fetch_assoc() : ['c' => 0];
+    if ((int)($row['c'] ?? 0) > 0) { return; }
+    $defaults = [
+        ['5 Hour',   5,    30.00],
+        ['1 Day',    24,   60.00],
+        ['3 Days',   72,   150.00],
+        ['7 Days',   168,  250.00],
+        ['15 Days',  360,  400.00],
+        ['30 Days',  720,  600.00],
+        ['60 Days',  1440, 800.00],
+    ];
+    $stmt = $conn->prepare("INSERT INTO license_plans (label, hours, price, active) VALUES (?, ?, ?, 1)");
+    foreach ($defaults as $d) {
+        [$label, $hours, $price] = $d;
+        $stmt->bind_param("sid", $label, $hours, $price);
+        $stmt->execute();
+    }
+}
+
+function loadPlans($role) {
+    if (!checkRole($role, 'admin')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    ensurePlansTable($conn);
+    seedDefaultPlansIfEmpty($conn);
+    $res = $conn->query("SELECT id, label, hours, price, active, created_at FROM license_plans ORDER BY hours ASC, id ASC");
+    $plans = [];
+    if ($res) { while ($r = $res->fetch_assoc()) { $plans[] = $r; } }
+    echo json_encode(['success' => true, 'data' => $plans]);
+    $conn->close();
+}
+
+function ownerCreatePlan($user_id, $role, $input) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    $label = trim($input['label'] ?? '');
+    $hours = (int)($input['hours'] ?? 0);
+    $price = (float)($input['price'] ?? 0);
+    if ($label === '' || $hours <= 0 || $price <= 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid label, hours, or price.']);
+        return;
+    }
+    $conn = connectDB();
+    ensurePlansTable($conn);
+    $stmt = $conn->prepare("INSERT INTO license_plans (label, hours, price, active) VALUES (?, ?, ?, 1)");
+    $stmt->bind_param("sid", $label, $hours, $price);
+    if ($stmt->execute()) {
+        echo json_encode(['success' => true, 'data' => ['id' => (int)$conn->insert_id]]);
+    } else {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Plan creation failed.']);
+    }
+    $conn->close();
+}
+
+function ownerUpdatePlan($user_id, $role, $input) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    $id = (int)($input['id'] ?? 0);
+    $label = isset($input['label']) ? trim($input['label']) : null;
+    $hours = isset($input['hours']) ? (int)$input['hours'] : null;
+    $price = isset($input['price']) ? (float)$input['price'] : null;
+    $active = isset($input['active']) ? (int)!!$input['active'] : null;
+    if ($id <= 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid plan id.']);
+        return;
+    }
+    $conn = connectDB();
+    ensurePlansTable($conn);
+    $fields = [];
+    $types = '';
+    $values = [];
+    if ($label !== null && $label !== '') { $fields[] = 'label = ?'; $types .= 's'; $values[] = $label; }
+    if ($hours !== null && $hours > 0) { $fields[] = 'hours = ?'; $types .= 'i'; $values[] = $hours; }
+    if ($price !== null && $price > 0) { $fields[] = 'price = ?'; $types .= 'd'; $values[] = $price; }
+    if ($active !== null) { $fields[] = 'active = ?'; $types .= 'i'; $values[] = $active; }
+    if (empty($fields)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'No valid fields to update.']);
+        $conn->close();
+        return;
+    }
+    $sql = 'UPDATE license_plans SET ' . implode(', ', $fields) . ' WHERE id = ?';
+    $types .= 'i';
+    $values[] = $id;
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param($types, ...$values);
+    if ($stmt->execute() && $stmt->affected_rows >= 0) {
+        echo json_encode(['success' => true]);
+    } else {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Plan update failed.']);
+    }
+    $conn->close();
+}
+
+function ownerDeletePlan($user_id, $role, $id) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    if ($id <= 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid plan id.']);
+        return;
+    }
+    $conn = connectDB();
+    ensurePlansTable($conn);
+    $stmt = $conn->prepare("DELETE FROM license_plans WHERE id = ?");
+    $stmt->bind_param("i", $id);
+    if ($stmt->execute() && $stmt->affected_rows > 0) {
+        echo json_encode(['success' => true]);
+    } else {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'Plan not found or delete failed.']);
+    }
+    $conn->close();
+}
+
+/**
  * Generates a license key, deducts balance, and saves the record.
  */
 function createLicense($user_id, $role, $input) {
@@ -417,15 +564,54 @@ function createLicense($user_id, $role, $input) {
         return;
     }
     
-    $cost = (float)($input['cost'] ?? 0);
-    if ($cost <= 0) {
+    // Validate input
+    $duration = $input['duration_id'] ?? null;
+    $max_devices = (int)($input['max_devices'] ?? 1);
+    $game_package = $input['package_id'] ?? null;
+    if (!$duration || !$game_package || $max_devices <= 0) {
         http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'Invalid license cost.']);
+        echo json_encode(['success' => false, 'message' => 'Missing or invalid fields for license creation.']);
         return;
     }
 
     $conn = connectDB();
-    
+    ensurePlansTable($conn);
+
+    // Compute server-side cost using plan price
+    $planPrice = null;
+    if (preg_match('/^\\d+$/', (string)$duration)) {
+        $stmt = $conn->prepare("SELECT price, active FROM license_plans WHERE id = ?");
+        $id = (int)$duration;
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        $plan = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$plan || (int)$plan['active'] !== 1) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Selected plan unavailable.']);
+            $conn->close();
+            return;
+        }
+        $planPrice = (float)$plan['price'];
+    } else {
+        $legacyPrices = [
+            'opt1' => 30.00,
+            'opt2' => 60.00,
+            'opt3' => 150.00,
+            'opt4' => 250.00,
+            'opt5' => 400.00,
+            'opt6' => 600.00,
+            'opt7' => 800.00,
+        ];
+        if (!isset($legacyPrices[$duration])) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Invalid duration selected.']);
+            $conn->close();
+            return;
+        }
+        $planPrice = (float)$legacyPrices[$duration];
+    }
+    $computedCost = $planPrice * max(1, $max_devices);
     $conn->begin_transaction();
     $stmt = $conn->prepare("SELECT balance FROM users WHERE user_id = ? FOR UPDATE");
     $stmt->bind_param("s", $user_id);
@@ -433,7 +619,7 @@ function createLicense($user_id, $role, $input) {
     $userBalance = $stmt->get_result()->fetch_assoc()['balance'] ?? 0;
     $stmt->close();
 
-    if ($userBalance < $cost) {
+    if ($userBalance < $computedCost) {
         $conn->rollback();
         http_response_code(402);
         echo json_encode(['success' => false, 'message' => 'Insufficient balance.']);
@@ -442,10 +628,6 @@ function createLicense($user_id, $role, $input) {
     }
     
     $key_string = bin2hex(random_bytes(11)); 
-    $max_devices = (int)($input['max_devices'] ?? 1);
-    $duration = $input['duration_id'];
-    $game_package = $input['package_id'];
-    $days = $input['days'] ?? null; 
     $expires = NULL; // start on first use (activation)
     
     $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) 
@@ -461,13 +643,13 @@ function createLicense($user_id, $role, $input) {
         return;
     }
     
-    $newBalance = $userBalance - $cost;
+    $newBalance = $userBalance - $computedCost;
     $stmt = $conn->prepare("UPDATE users SET balance = ? WHERE user_id = ?");
     $stmt->bind_param("ds", $newBalance, $user_id);
     $stmt->execute();
     
     $conn->commit();
-    echo json_encode(['success' => true, 'data' => ['key_string' => $key_string, 'new_balance' => $newBalance]]);
+    echo json_encode(['success' => true, 'data' => ['key_string' => $key_string, 'new_balance' => $newBalance, 'debited' => $computedCost]]);
     $conn->close();
 }
 
