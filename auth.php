@@ -75,10 +75,7 @@ function handleRegistration($conn, $data) {
         http_response_code(400);
         return array("success" => false, "message" => "Invalid email or password.");
     }
-    if (empty($referral_code)) {
-        http_response_code(400);
-        return array("success" => false, "message" => "Referral code is required for signup.");
-    }
+    // Referral code is OPTIONAL for normal users. Reseller/Admin access requires a referral.
     if (strlen($password) < 8) {
         http_response_code(400);
         return array("success" => false, "message" => "Password must be at least 8 characters.");
@@ -95,21 +92,27 @@ function handleRegistration($conn, $data) {
     }
     $stmt->close();
 
-    $referral_data = ['initial_balance' => 0.00, 'max_role' => 'user', 'creator_id' => null];
-    $stmt = $conn->prepare("SELECT initial_balance, max_role, creator_id FROM referrals WHERE code = ?");
-    $stmt->bind_param("s", $referral_code);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    if ($result->num_rows !== 1) {
-        http_response_code(400);
-        return array("success" => false, "message" => "Invalid referral code.");
+    $final_balance = 0.00;
+    $final_role = 'user';
+    $referred_by_id = null;
+
+    if ($referral_code !== '') {
+        $referral_data = ['initial_balance' => 0.00, 'max_role' => 'user', 'creator_id' => null];
+        $stmt = $conn->prepare("SELECT initial_balance, max_role, creator_id FROM referrals WHERE code = ?");
+        $stmt->bind_param("s", $referral_code);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($result->num_rows !== 1) {
+            http_response_code(400);
+            return array("success" => false, "message" => "Invalid referral code.");
+        }
+        $referral_data = $result->fetch_assoc();
+        $stmt->close();
+
+        $final_balance = $referral_data['initial_balance'];
+        $final_role = $referral_data['max_role']; // can be user/reseller/admin (never owner)
+        $referred_by_id = $referral_data['creator_id'];
     }
-    $referral_data = $result->fetch_assoc();
-    $stmt->close();
-    
-    $final_balance = $referral_data['initial_balance'];
-    $final_role = $referral_data['max_role'];
-    $referred_by_id = $referral_data['creator_id'];
     $final_user_id = uniqid('UID-', true);
 
     $password_hash = password_hash($password, PASSWORD_DEFAULT);

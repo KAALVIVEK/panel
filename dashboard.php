@@ -348,6 +348,53 @@ function getDurationHours($duration_id) {
     return isset($map[$duration_id]) ? (int)$map[$duration_id] : 24;
 }
 
+/** Default unit price map (₹) aligned with frontend LICENSE_OPTIONS */
+function getDefaultUnitPrice($duration_id) {
+    $map = [
+        'opt1' => 30.00,
+        'opt2' => 60.00,
+        'opt3' => 150.00,
+        'opt4' => 250.00,
+        'opt5' => 400.00,
+        'opt6' => 600.00,
+        'opt7' => 800.00,
+    ];
+    return isset($map[$duration_id]) ? (float)$map[$duration_id] : 60.00;
+}
+
+function isResellerRole($role) {
+    return in_array($role, ['reseller','admin','owner'], true);
+}
+
+function ensureLicensePriceColumn($conn) {
+    $res = $conn->query("SHOW COLUMNS FROM licenses LIKE 'price'");
+    if ($res && $res->num_rows === 0) {
+        $conn->query("ALTER TABLE licenses ADD COLUMN price DECIMAL(10,2) NULL DEFAULT NULL");
+    }
+}
+
+/**
+ * Compute total price for a license using brand pricing (user/reseller tier) or default.
+ */
+function computeLicenseCost($role, $brand, $duration_id, $max_devices, $conn) {
+    ensureBrandPricingTable($conn);
+    $unit = null;
+    if ($brand) {
+        $stmt = $conn->prepare("SELECT price_user, price_reseller FROM brand_pricing WHERE brand = ? AND duration_id = ?");
+        $stmt->bind_param("ss", $brand, $duration_id);
+        if ($stmt->execute()) {
+            $row = $stmt->get_result()->fetch_assoc();
+            if ($row) {
+                $unit = isResellerRole($role) ? (float)$row['price_reseller'] : (float)$row['price_user'];
+            }
+        }
+        $stmt->close();
+    }
+    if ($unit === null) { $unit = getDefaultUnitPrice($duration_id); }
+    $md = max(1, (int)$max_devices);
+    return $unit * $md;
+}
+
 /** Service flags helpers **/
 function ensureServiceFlagsTable($conn) {
     $conn->query("CREATE TABLE IF NOT EXISTS service_flags (flag VARCHAR(64) PRIMARY KEY, value VARCHAR(16) NOT NULL DEFAULT '0', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)");
@@ -402,13 +449,11 @@ function createLicense($user_id, $role, $input) {
         return;
     }
 
-    $cost = (float)($input['cost'] ?? 0);
-    if ($cost <= 0) {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'Invalid license cost.']);
-        return;
-    }
-    
+    // Compute server-side cost using role + brand + duration + devices
+    $max_devices = (int)($input['max_devices'] ?? 1);
+    $duration = $input['duration_id'] ?? 'opt2';
+    $game_package = $input['package_id'] ?? '';
+    $brand = strtolower(trim($input['brand'] ?? ''));
     $conn->begin_transaction();
     $stmt = $conn->prepare("SELECT balance FROM users WHERE user_id = ? FOR UPDATE");
     $stmt->bind_param("s", $user_id);
@@ -416,7 +461,28 @@ function createLicense($user_id, $role, $input) {
     $userBalance = $stmt->get_result()->fetch_assoc()['balance'] ?? 0;
     $stmt->close();
 
-    if ($userBalance < $cost) {
+    // Pricing fetch uses the same connection/transaction scope
+    $computedCost = 0.0;
+    // Ensure pricing table exists and derive cost
+    ensureBrandPricingTable($conn);
+    $stmt = $conn->prepare("SELECT price_user, price_reseller FROM brand_pricing WHERE brand = ? AND duration_id = ?");
+    $stmt->bind_param("ss", $brand, $duration);
+    if ($brand !== '' && $stmt->execute()) {
+        $row = $stmt->get_result()->fetch_assoc();
+        if ($row) {
+            $unit = in_array($role, ['reseller','admin','owner'], true) ? (float)$row['price_reseller'] : (float)$row['price_user'];
+            $computedCost = $unit * max(1, $max_devices);
+        }
+    }
+    $stmt->close();
+    if (!($computedCost > 0)) {
+        // fallback to default map
+        $defaultMap = ['opt1'=>30,'opt2'=>60,'opt3'=>150,'opt4'=>250,'opt5'=>400,'opt6'=>600,'opt7'=>800];
+        $unit = isset($defaultMap[$duration]) ? (float)$defaultMap[$duration] : 60.0;
+        $computedCost = $unit * max(1, $max_devices);
+    }
+
+    if ($userBalance < $computedCost) {
         $conn->rollback();
         http_response_code(402);
         echo json_encode(['success' => false, 'message' => 'Insufficient balance.']);
@@ -425,17 +491,22 @@ function createLicense($user_id, $role, $input) {
     }
     
     $key_string = bin2hex(random_bytes(11)); 
-    $max_devices = (int)($input['max_devices'] ?? 1);
-    $duration = $input['duration_id'];
-    $game_package = $input['package_id'];
+    $max_devices = (int)($max_devices);
+    $duration = $duration;
+    $game_package = $game_package;
     $days = $input['days'] ?? null; 
     $expires = NULL; // start on first use (activation)
     
-    $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) 
-            VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
+    // Ensure price column exists
+    $checkCol = $conn->query("SHOW COLUMNS FROM licenses LIKE 'price'");
+    if ($checkCol && $checkCol->num_rows === 0) {
+        $conn->query("ALTER TABLE licenses ADD COLUMN price DECIMAL(10,2) NULL DEFAULT NULL");
+    }
+    $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires, price) 
+            VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?, ?)";
     $stmt = $conn->prepare($sql);
-    
-    if (!$stmt->bind_param("sssiss", $key_string, $game_package, $duration, $max_devices, $user_id, $expires) || !$stmt->execute()) {
+    $priceVal = $computedCost;
+    if (!$stmt->bind_param("sssissd", $key_string, $game_package, $duration, $max_devices, $user_id, $expires, $priceVal) || !$stmt->execute()) {
         $error_message = $conn->error;
         $conn->rollback();
         http_response_code(500);
@@ -444,7 +515,7 @@ function createLicense($user_id, $role, $input) {
         return;
     }
     
-    $newBalance = $userBalance - $cost;
+    $newBalance = $userBalance - $computedCost;
     $stmt = $conn->prepare("UPDATE users SET balance = ? WHERE user_id = ?");
     $stmt->bind_param("ds", $newBalance, $user_id);
     $stmt->execute();
@@ -459,7 +530,8 @@ function ensureBrandPricingTable($conn) {
     $conn->query("CREATE TABLE IF NOT EXISTS brand_pricing (
         brand VARCHAR(64) NOT NULL,
         duration_id VARCHAR(16) NOT NULL,
-        price DECIMAL(10,2) NOT NULL DEFAULT 0,
+        price_user DECIMAL(10,2) NOT NULL DEFAULT 0,
+        price_reseller DECIMAL(10,2) NOT NULL DEFAULT 0,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (brand, duration_id)
     )");
@@ -471,13 +543,16 @@ function ensureBrandPricingTable($conn) {
 function getBrandPricing() {
     $conn = connectDB();
     ensureBrandPricingTable($conn);
-    $result = $conn->query("SELECT brand, duration_id, price FROM brand_pricing");
+    $result = $conn->query("SELECT brand, duration_id, price_user, price_reseller FROM brand_pricing");
     $pricing = [];
     if ($result) {
         while ($row = $result->fetch_assoc()) {
             $b = $row['brand'];
             if (!isset($pricing[$b])) { $pricing[$b] = []; }
-            $pricing[$b][$row['duration_id']] = (float)$row['price'];
+            $pricing[$b][$row['duration_id']] = [
+                'user' => (float)$row['price_user'],
+                'reseller' => (float)$row['price_reseller']
+            ];
         }
     }
     echo json_encode(['success' => true, 'data' => $pricing]);
@@ -495,17 +570,18 @@ function ownerSetBrandPrice($user_id, $role, $input) {
     }
     $brand = trim($input['brand'] ?? '');
     $duration_id = $input['duration_id'] ?? '';
-    $price = (float)($input['price'] ?? -1);
+    $price_user = (float)($input['price_user'] ?? -1);
+    $price_reseller = (float)($input['price_reseller'] ?? -1);
     $validDur = in_array($duration_id, ['opt1','opt2','opt3','opt4','opt5','opt6','opt7'], true);
-    if ($brand === '' || !$validDur || $price < 0) {
+    if ($brand === '' || !$validDur || $price_user < 0 || $price_reseller < 0) {
         http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'Invalid brand/duration/price.']);
+        echo json_encode(['success' => false, 'message' => 'Invalid brand/duration/prices.']);
         return;
     }
     $conn = connectDB();
     ensureBrandPricingTable($conn);
-    $stmt = $conn->prepare("INSERT INTO brand_pricing (brand, duration_id, price) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE price = VALUES(price)");
-    $stmt->bind_param("ssd", $brand, $duration_id, $price);
+    $stmt = $conn->prepare("INSERT INTO brand_pricing (brand, duration_id, price_user, price_reseller) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE price_user = VALUES(price_user), price_reseller = VALUES(price_reseller)");
+    $stmt->bind_param("ssdd", $brand, $duration_id, $price_user, $price_reseller);
     if ($stmt->execute()) {
         echo json_encode(['success' => true]);
     } else {
@@ -528,14 +604,20 @@ function ownerAddManualLicense($user_id, $role, $input) {
     $key_string = strtoupper(trim($input['key_string'] ?? ''));
     $brand = trim($input['brand'] ?? '');
     $duration = $input['duration_id'] ?? '';
-    $max_devices = (int)($input['max_devices'] ?? 1);
+    $max_devices = 1; // force manual keys to one device
+    $price = isset($input['price']) ? (float)$input['price'] : -1;
     $validDur = in_array($duration, ['opt1','opt2','opt3','opt4','opt5','opt6','opt7'], true);
-    if ($key_string === '' || strlen($key_string) < 10 || $brand === '' || !$validDur || $max_devices < 1) {
+    if ($key_string === '' || strlen($key_string) < 10 || $brand === '' || !$validDur || $price < 0) {
         http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'Invalid input for manual license.']);
+        echo json_encode(['success' => false, 'message' => 'Invalid input for manual license. Provide price and valid duration.']);
         return;
     }
     $conn = connectDB();
+    // ensure price column exists
+    $checkCol = $conn->query("SHOW COLUMNS FROM licenses LIKE 'price'");
+    if ($checkCol && $checkCol->num_rows === 0) {
+        $conn->query("ALTER TABLE licenses ADD COLUMN price DECIMAL(10,2) NULL DEFAULT NULL");
+    }
     // Ensure uniqueness of key_string
     $stmt = $conn->prepare("SELECT 1 FROM licenses WHERE key_string = ? LIMIT 1");
     $stmt->bind_param("s", $key_string);
@@ -549,9 +631,9 @@ function ownerAddManualLicense($user_id, $role, $input) {
         return;
     }
     $expires = NULL;
-    $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
+    $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires, price) VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?, ?)";
     $stmt = $conn->prepare($sql);
-    if (!$stmt->bind_param("sssiss", $key_string, $brand, $duration, $max_devices, $user_id, $expires) || !$stmt->execute()) {
+    if (!$stmt->bind_param("sssissd", $key_string, $brand, $duration, $max_devices, $user_id, $expires, $price) || !$stmt->execute()) {
         http_response_code(500);
         echo json_encode(['success' => false, 'message' => 'Manual license insert failed: ' . $conn->error]);
         $conn->close();

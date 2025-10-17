@@ -196,10 +196,17 @@
             const maxDevices = parseInt(maxDevicesInput.value) || 1;
             let totalCost = 0;
             if (selectedDuration) {
-                // If brand-specific price exists for selected brand, use it
                 const brand = (document.getElementById('license-brand')?.value || '').toLowerCase();
-                const brandPrice = BRAND_PRICING?.[brand]?.[selectedDuration.id];
-                const unitPrice = (typeof brandPrice === 'number') ? brandPrice : selectedDuration.price;
+                const tier = BRAND_PRICING?.[brand]?.[selectedDuration.id];
+                let unitPrice = selectedDuration.price;
+                if (tier && typeof tier === 'object') {
+                    const isReseller = (window.userRole === 'reseller' || window.userRole === 'admin' || window.userRole === 'owner');
+                    unitPrice = isReseller ? (typeof tier.reseller === 'number' ? tier.reseller : unitPrice)
+                                           : (typeof tier.user === 'number' ? tier.user : unitPrice);
+                } else if (typeof tier === 'number') {
+                    // Backward compatibility if pricing hasn't been updated yet
+                    unitPrice = tier;
+                }
                 totalCost = unitPrice * maxDevices;
             }
             document.getElementById('licenseTotalCost').textContent = totalCost.toFixed(2);
@@ -251,6 +258,7 @@
             const totalCost = parseFloat(document.getElementById('licenseTotalCost').textContent);
             const maxDevices = parseInt(document.getElementById('max-devices').value) || 1;
             const packageId = document.getElementById('license-game').value;
+            const brand = (document.getElementById('license-brand')?.value || '').trim();
             const durationId = document.getElementById('license-duration').value;
             const selectedDuration = LICENSE_OPTIONS.find(opt => opt.id === durationId);
             const gameName = GAMES.find(g => g.package === packageId).name;
@@ -263,6 +271,7 @@
                     }
                     const newKeyData = await fetchAPI('create_license', {
                         package_id: packageId,
+                        brand: brand,
                         duration_id: durationId,
                         days: selectedDuration.days,
                         max_devices: maxDevices,
@@ -499,9 +508,10 @@
             if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
             const brand = document.getElementById('brand-name').value.trim();
             const duration = document.getElementById('brand-duration').value;
-            const price = parseFloat(document.getElementById('brand-price').value);
-            if (!brand || !duration || !(price >= 0)) { showMessage('Invalid brand/duration/price.', 'error'); return; }
-            const ok = await fetchAPI('owner_set_brand_price', { brand, duration_id: duration, price });
+            const priceUser = parseFloat(document.getElementById('brand-price-user').value);
+            const priceReseller = parseFloat(document.getElementById('brand-price-reseller').value);
+            if (!brand || !duration || !(priceUser >= 0) || !(priceReseller >= 0)) { showMessage('Invalid brand/duration/prices.', 'error'); return; }
+            const ok = await fetchAPI('owner_set_brand_price', { brand, duration_id: duration, price_user: priceUser, price_reseller: priceReseller });
             if (ok) { showMessage('Brand price updated.', 'success'); loadBrandPricing(); }
         };
 
@@ -512,9 +522,9 @@
             const key = document.getElementById('manual-key-string').value.trim();
             const brand = document.getElementById('manual-brand').value.trim();
             const duration = document.getElementById('manual-duration').value;
-            const maxDevices = parseInt(document.getElementById('manual-max-devices').value) || 1;
-            if (!key || !brand || !duration) { showMessage('Fill all manual license fields.', 'error'); return; }
-            const data = await fetchAPI('owner_add_manual_license', { key_string: key, brand, duration_id: duration, max_devices: maxDevices });
+            const price = parseFloat(document.getElementById('manual-price').value);
+            if (!key || !brand || !duration || !(price >= 0)) { showMessage('Fill all manual license fields.', 'error'); return; }
+            const data = await fetchAPI('owner_add_manual_license', { key_string: key, brand, duration_id: duration, price });
             if (data && data.key_string) {
                 showMessage(`Manual key added: ${data.key_string.substring(0,8)}...`, 'success');
                 displayRegisteredLicenses();
@@ -1304,10 +1314,11 @@
                             </label>
                             <div id="ownerBrandPricingSection" class="p-4 widget-card rounded-lg border-primary/30 hidden">
                                 <h4 class="text-white font-semibold mb-2">Brand Pricing</h4>
-                                <form class="grid grid-cols-1 md:grid-cols-4 gap-2" onsubmit="ownerSetBrandPrice(event)">
+                                <form class="grid grid-cols-1 md:grid-cols-6 gap-2" onsubmit="ownerSetBrandPrice(event)">
                                     <input id="brand-name" type="text" placeholder="Brand (e.g., ztrax, lethal)" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
                                     <select id="brand-duration" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required></select>
-                                    <input id="brand-price" type="number" step="0.01" placeholder="Price (₹)" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
+                                    <input id="brand-price-user" type="number" step="0.01" placeholder="User Price (₹)" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
+                                    <input id="brand-price-reseller" type="number" step="0.01" placeholder="Reseller Price (₹)" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
                                     <button type="submit" class="glowing-button text-sm px-4 py-2 rounded-lg">Save Price</button>
                                 </form>
                             </div>
@@ -1317,8 +1328,8 @@
                                     <input id="manual-key-string" type="text" placeholder="KEY STRING" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
                                     <input id="manual-brand" type="text" placeholder="Brand (e.g., ztrax)" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
                                     <select id="manual-duration" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required></select>
-                                    <input id="manual-max-devices" type="number" value="1" min="1" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
-                                    <button type="submit" class="glowing-button text-sm px-4 py-2 rounded-lg">Add Manual Key</button>
+                                    <input id="manual-price" type="number" step="0.01" placeholder="Price (₹)" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
+                                    <button type="submit" class="glowing-button text-sm px-4 py-2 rounded-lg">Add Manual Key (1 device)</button>
                                 </form>
                             </div>
                         </div>

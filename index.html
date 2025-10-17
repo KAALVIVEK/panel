@@ -211,7 +211,7 @@
                                 <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none accent-purple">
                                     <svg data-lucide="key-round"></svg>
                                 </div>
-                                <input id="referral-code" name="referral-code" type="text" autocomplete="off" required
+                                <input id="referral-code" name="referral-code" type="text" autocomplete="off"
                                     class="glowing-input block w-full pl-10 pr-4 py-2 border rounded-lg shadow-sm placeholder-gray-500 focus:outline-none focus:ring-0 sm:text-base transition duration-300 ease-in-out"
                                     placeholder="12-digit code">
                             </div>
@@ -327,7 +327,7 @@
                         throw new Error("Passwords mismatch. Verify inputs.");
                     }
                     
-                    if (!referralCode) { throw new Error('Referral code is required for signup.'); }
+                    // Referral optional. If provided, determines elevated role/balance.
                     const result = await fetchAPI('register_user', { email, password, name, referral_code: referralCode });
 
                     if (result.success) {
