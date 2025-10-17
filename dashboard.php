@@ -137,6 +137,19 @@ try {
             ownerSetKeyGeneration($user_id, $role, (bool)($input['enabled'] ?? false));
             break;
 
+        case 'load_plans':
+            loadPlans($role);
+            break;
+        case 'owner_create_plan':
+            ownerCreatePlan($user_id, $role, $input);
+            break;
+        case 'owner_update_plan':
+            ownerUpdatePlan($user_id, $role, $input);
+            break;
+        case 'owner_delete_plan':
+            ownerDeletePlan($user_id, $role, (int)($input['id'] ?? 0));
+            break;
+
         case 'reset_user_login_key':
             resetUserLoginKey($user_id, $role, $input['target_user_id']);
             break;
