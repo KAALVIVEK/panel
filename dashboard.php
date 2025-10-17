@@ -338,6 +338,33 @@ function loadLicenses($user_id, $role) {
  * Maps duration id to hours for expiry computation.
  */
 function getDurationHours($duration_id) {
+    // Attempt dynamic plan lookup first (by numeric id or label)
+    try {
+        $conn = connectDB();
+        ensurePlansTable($conn);
+        if (preg_match('/^\d+$/', (string)$duration_id)) {
+            $stmt = $conn->prepare("SELECT hours FROM license_plans WHERE id = ? AND active = 1");
+            $id = (int)$duration_id;
+            $stmt->bind_param("i", $id);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            $conn->close();
+            if ($row && isset($row['hours'])) { return (int)$row['hours']; }
+        } else {
+            $stmt = $conn->prepare("SELECT hours FROM license_plans WHERE label = ? AND active = 1");
+            $stmt->bind_param("s", $duration_id);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            $conn->close();
+            if ($row && isset($row['hours'])) { return (int)$row['hours']; }
+        }
+    } catch (Exception $e) {
+        // ignore and fallback
+    }
+
+    // Fallback to legacy static map
     $map = [
         'opt1' => 5,     // 5 hours
         'opt2' => 24,    // 1 day
