@@ -965,11 +965,11 @@ function checkLicense($user_id, $role, $license_id, $device_id = null) {
         $stmt->close();
         $duration_id = $durRes ? $durRes['duration'] : 'opt2';
         $hours = getDurationHours($duration_id);
-        $stmt = $conn->prepare("UPDATE licenses SET expires = DATE_ADD(NOW(), INTERVAL ? HOUR), status = 'Active', devices_used = LEAST(max_devices, devices_used + 1), linked_device_id = IFNULL(?, linked_device_id) WHERE license_id = ?");
+    $stmt = $conn->prepare("UPDATE licenses SET expires = DATE_ADD(NOW(), INTERVAL ? HOUR), status = 'Active', devices_used = LEAST(1, devices_used + 1), max_devices = 1, linked_device_id = IFNULL(?, linked_device_id) WHERE license_id = ?");
         $stmt->bind_param("isi", $hours, $device_id, $license_id);
         $stmt->execute();
-    } else if ($row['devices_used'] < $row['max_devices']) {
-        $stmt = $conn->prepare("UPDATE licenses SET devices_used = devices_used + 1, linked_device_id = IFNULL(?, linked_device_id) WHERE license_id = ?");
+    } else if ($row['devices_used'] < 1) {
+        $stmt = $conn->prepare("UPDATE licenses SET devices_used = devices_used + 1, max_devices = 1, linked_device_id = IFNULL(?, linked_device_id) WHERE license_id = ?");
         $stmt->bind_param("si", $device_id, $license_id);
         $stmt->execute();
     }
