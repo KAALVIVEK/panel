@@ -594,7 +594,7 @@ function ownerBulkAddManualLicenses($user_id, $role, $input) {
         $stmtCheck->execute();
         $exists = $stmtCheck->get_result()->num_rows > 0;
         if ($exists) { $duplicates++; continue; }
-        if (!$stmtIns->bind_param("sss sd", $key, $brand, $duration, $user_id, $price)) { $failed++; continue; }
+        if (!$stmtIns->bind_param("ssssd", $key, $brand, $duration, $user_id, $price)) { $failed++; continue; }
         if ($stmtIns->execute()) { $inserted++; } else { $failed++; }
     }
     echo json_encode(['success' => true, 'data' => ['inserted' => $inserted, 'duplicates' => $duplicates, 'failed' => $failed]]);
