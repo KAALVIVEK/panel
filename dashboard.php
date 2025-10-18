@@ -533,9 +533,76 @@ function ownerSetKeyGeneration($user_id, $role, $enabled) {
  * Now gated behind the owner-controlled service flag `key_generation_enabled`.
  */
 function createLicense($user_id, $role, $input) {
-    http_response_code(403);
-    echo json_encode(['success' => false, 'message' => 'Random key generation has been permanently disabled. Use owner manual key upload.']);
-    return;
+    // Purchase an available manual key inserted by owner (inventory allocation)
+    if (!checkRole($role, 'user')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Authorization required.']);
+        return;
+    }
+    $duration = $input['duration_id'] ?? '';
+    $brand = trim($input['brand'] ?? '');
+    if (!$duration) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Missing duration.']);
+        return;
+    }
+    $conn = connectDB();
+    $conn->begin_transaction();
+
+    // Select one available license matching duration (and brand if provided)
+    if ($brand !== '') {
+        $stmt = $conn->prepare("SELECT license_id, price, key_string FROM licenses WHERE status='Issued' AND devices_used=0 AND duration = ? AND game_package = ? LIMIT 1 FOR UPDATE");
+        $stmt->bind_param("ss", $duration, $brand);
+    } else {
+        $stmt = $conn->prepare("SELECT license_id, price, key_string FROM licenses WHERE status='Issued' AND devices_used=0 AND duration = ? LIMIT 1 FOR UPDATE");
+        $stmt->bind_param("s", $duration);
+    }
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) {
+        $conn->rollback();
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'No stock available for selected duration/brand.']);
+        $conn->close();
+        return;
+    }
+
+    $price = (float)($row['price'] ?? 0);
+    if (!($price > 0)) {
+        $conn->rollback();
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Inventory price not set.']);
+        $conn->close();
+        return;
+    }
+    // Charge user balance
+    $stmt = $conn->prepare("SELECT balance FROM users WHERE user_id = ? FOR UPDATE");
+    $stmt->bind_param("s", $user_id);
+    $stmt->execute();
+    $balRow = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    $balance = (float)($balRow['balance'] ?? 0);
+    if ($balance < $price) {
+        $conn->rollback();
+        http_response_code(402);
+        echo json_encode(['success' => false, 'message' => 'Insufficient balance.']);
+        $conn->close();
+        return;
+    }
+    $newBalance = $balance - $price;
+    $stmt = $conn->prepare("UPDATE users SET balance = ? WHERE user_id = ?");
+    $stmt->bind_param("ds", $newBalance, $user_id);
+    $stmt->execute();
+
+    // Assign license to user (keep status Issued; activation happens on first check)
+    $stmt = $conn->prepare("UPDATE licenses SET creator_id = ? WHERE license_id = ?");
+    $stmt->bind_param("si", $user_id, $row['license_id']);
+    $stmt->execute();
+
+    $conn->commit();
+    echo json_encode(['success' => true, 'data' => ['key_string' => $row['key_string'], 'new_balance' => $newBalance]]);
+    $conn->close();
 }
 
 /** Brand pricing storage (owner managed) **/
