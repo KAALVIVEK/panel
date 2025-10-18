@@ -195,9 +195,13 @@
             const maxDevicesInput = document.getElementById('max-devices');
             const selectedDuration = durationSelect.value ? LICENSE_OPTIONS.find(opt => opt.id === durationSelect.value) : null;
             const maxDevices = 1;
-            let totalCost = 0;
+            // Set loading state first
+            const costEl = document.getElementById('licenseTotalCost');
+            const genBtn = document.getElementById('generateLicenseButton');
+            costEl.textContent = '...';
+            genBtn.disabled = true;
+            genBtn.classList.add('opacity-50');
             if (selectedDuration) {
-                // Get live prices from API to avoid stale or empty table
                 (async () => {
                     const inv = await fetchAPI('list_available_inventory');
                     const brandVal = (document.getElementById('license-brand')?.value || '').trim().toLowerCase();
@@ -205,18 +209,15 @@
                     const matches = items.filter(it => it.duration === selectedDuration.id && (!brandVal || String(it.brand||'').toLowerCase() === brandVal));
                     const px = matches.length ? Math.min(...matches.map(it => parseFloat(it.price)||0)) : 0;
                     const computed = (px * maxDevices) || 0;
-                    document.getElementById('licenseTotalCost').textContent = computed.toFixed(2);
-                    document.getElementById('licenseTotalCost').classList.toggle('text-red-400', computed > window.userBalance);
-                    document.getElementById('licenseTotalCost').classList.toggle('text-green-400', computed <= window.userBalance);
-                    document.getElementById('generateLicenseButton').disabled = computed === 0 || computed > window.userBalance;
-                    document.getElementById('generateLicenseButton').classList.toggle('opacity-50', computed > window.userBalance);
+                    costEl.textContent = computed.toFixed(2);
+                    costEl.classList.toggle('text-red-400', computed > window.userBalance);
+                    costEl.classList.toggle('text-green-400', computed <= window.userBalance);
+                    genBtn.disabled = computed === 0 || computed > window.userBalance;
+                    genBtn.classList.toggle('opacity-50', genBtn.disabled);
                 })();
+            } else {
+                costEl.textContent = '0.00';
             }
-            document.getElementById('licenseTotalCost').textContent = totalCost.toFixed(2);
-            document.getElementById('licenseTotalCost').classList.toggle('text-red-400', totalCost > window.userBalance);
-            document.getElementById('licenseTotalCost').classList.toggle('text-green-400', totalCost <= window.userBalance);
-            document.getElementById('generateLicenseButton').disabled = totalCost === 0 || totalCost > window.userBalance;
-            document.getElementById('generateLicenseButton').classList.toggle('opacity-50', totalCost > window.userBalance);
         };
 
         async function loadBrandPricing() {
