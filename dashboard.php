@@ -140,6 +140,9 @@ try {
         case 'owner_add_manual_license':
             ownerAddManualLicense($user_id, $role, $input);
             break;
+        case 'owner_bulk_add_manual_licenses':
+            ownerBulkAddManualLicenses($user_id, $role, $input);
+            break;
 
         case 'get_service_status':
             getServiceStatus();
@@ -555,7 +558,9 @@ function getBrandPricing() {
             ];
         }
     }
-    echo json_encode(['success' => true, 'data' => $pricing]);
+    // Also return the flat list of brands for dropdowns
+    $brands = array_keys($pricing);
+    echo json_encode(['success' => true, 'data' => ['matrix' => $pricing, 'brands' => $brands]]);
     $conn->close();
 }
 
@@ -640,6 +645,48 @@ function ownerAddManualLicense($user_id, $role, $input) {
         return;
     }
     echo json_encode(['success' => true, 'data' => ['key_string' => $key_string]]);
+    $conn->close();
+}
+
+/**
+ * Owner: Bulk add multiple manual licenses for a brand.
+ * Input: brand, duration_id, price, keys (array of key strings)
+ */
+function ownerBulkAddManualLicenses($user_id, $role, $input) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    $brand = trim($input['brand'] ?? '');
+    $duration = $input['duration_id'] ?? '';
+    $price = isset($input['price']) ? (float)$input['price'] : -1;
+    $keys = $input['keys'] ?? [];
+    if ($brand === '' || !in_array($duration, ['opt1','opt2','opt3','opt4','opt5','opt6','opt7'], true) || $price < 0 || !is_array($keys) || count($keys) === 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid input for bulk manual licenses.']);
+        return;
+    }
+    $conn = connectDB();
+    // Ensure price column exists
+    $checkCol = $conn->query("SHOW COLUMNS FROM licenses LIKE 'price'");
+    if ($checkCol && $checkCol->num_rows === 0) {
+        $conn->query("ALTER TABLE licenses ADD COLUMN price DECIMAL(10,2) NULL DEFAULT NULL");
+    }
+    $inserted = 0; $duplicates = 0; $failed = 0;
+    $stmtCheck = $conn->prepare("SELECT 1 FROM licenses WHERE key_string = ? LIMIT 1");
+    $stmtIns = $conn->prepare("INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires, price) VALUES (?, ?, ?, 1, 0, 'Issued', ?, NULL, ?)");
+    foreach ($keys as $rawKey) {
+        $key = strtoupper(trim((string)$rawKey));
+        if ($key === '' || strlen($key) < 10) { $failed++; continue; }
+        $stmtCheck->bind_param("s", $key);
+        $stmtCheck->execute();
+        $exists = $stmtCheck->get_result()->num_rows > 0;
+        if ($exists) { $duplicates++; continue; }
+        if (!$stmtIns->bind_param("sss sd", $key, $brand, $duration, $user_id, $price)) { $failed++; continue; }
+        if ($stmtIns->execute()) { $inserted++; } else { $failed++; }
+    }
+    echo json_encode(['success' => true, 'data' => ['inserted' => $inserted, 'duplicates' => $duplicates, 'failed' => $failed]]);
     $conn->close();
 }
 
