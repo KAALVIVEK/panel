@@ -137,6 +137,13 @@ try {
             ownerSetKeyGeneration($user_id, $role, (bool)($input['enabled'] ?? false));
             break;
 
+        case 'owner_add_preloaded_keys':
+            ownerAddPreloadedKeys($user_id, $role, $input);
+            break;
+        case 'owner_list_preloaded_keys':
+            ownerListPreloadedKeys($role);
+            break;
+
         case 'reset_user_login_key':
             resetUserLoginKey($user_id, $role, $input['target_user_id']);
             break;
@@ -367,6 +374,79 @@ function ownerSetKeyGeneration($user_id, $role, $enabled) {
     $conn->close();
 }
 
+/** Preloaded keys helpers **/
+function ensurePreloadedKeysTable($conn) {
+    $conn->query(
+        "CREATE TABLE IF NOT EXISTS preloaded_keys (
+            key_string VARCHAR(128) PRIMARY KEY,
+            status ENUM('available','used') NOT NULL DEFAULT 'available',
+            added_by_id VARCHAR(36) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            used_by_user_id VARCHAR(36) NULL,
+            used_at TIMESTAMP NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+}
+
+function ownerAddPreloadedKeys($user_id, $role, $input) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    ensurePreloadedKeysTable($conn);
+
+    $keys = [];
+    if (!empty($input['keys']) && is_array($input['keys'])) {
+        $keys = $input['keys'];
+    } elseif (!empty($input['keys_text']) && is_string($input['keys_text'])) {
+        $lines = preg_split('/\r?\n/', $input['keys_text']);
+        foreach ($lines as $line) {
+            $trim = trim($line);
+            if ($trim !== '') { $keys[] = $trim; }
+        }
+    }
+
+    if (empty($keys)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'No keys provided.']);
+        $conn->close();
+        return;
+    }
+
+    $inserted = 0; $skipped = 0;
+    $stmt = $conn->prepare("INSERT IGNORE INTO preloaded_keys (key_string, status, added_by_id) VALUES (?, 'available', ?)");
+    foreach ($keys as $k) {
+        $key = trim($k);
+        if ($key === '') { continue; }
+        $stmt->bind_param("ss", $key, $user_id);
+        if ($stmt->execute()) {
+            $inserted += ($stmt->affected_rows > 0) ? 1 : 0;
+            $skipped += ($stmt->affected_rows === 0) ? 1 : 0; // duplicate
+        }
+    }
+    echo json_encode(['success' => true, 'data' => ['added' => $inserted, 'skipped' => $skipped]]);
+    $conn->close();
+}
+
+function ownerListPreloadedKeys($role) {
+    if (!checkRole($role, 'admin')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    ensurePreloadedKeysTable($conn);
+    $res = $conn->query("SELECT key_string, status, created_at, used_at FROM preloaded_keys ORDER BY created_at DESC LIMIT 200");
+    $list = [];
+    if ($res) { while ($row = $res->fetch_assoc()) { $list[] = $row; } }
+    $countAvail = $conn->query("SELECT COUNT(*) AS c FROM preloaded_keys WHERE status='available'");
+    $avail = ($countAvail && $r = $countAvail->fetch_assoc()) ? (int)$r['c'] : 0;
+    echo json_encode(['success' => true, 'data' => ['available_count' => $avail, 'items' => $list]]);
+    $conn->close();
+}
+
 /**
  * Generates a license key, deducts balance, and saves the record.
  */
@@ -401,7 +481,25 @@ function createLicense($user_id, $role, $input) {
         return;
     }
     
-    $key_string = bin2hex(random_bytes(11)); 
+    // Pull a preloaded key provided by the Owner instead of generating randomly
+    ensurePreloadedKeysTable($conn);
+    // Lock and fetch the oldest available key
+    $stmt = $conn->prepare("SELECT key_string FROM preloaded_keys WHERE status = 'available' ORDER BY created_at ASC LIMIT 1 FOR UPDATE");
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $row = $res ? $res->fetch_assoc() : null;
+    $stmt->close();
+    if (!$row) {
+        $conn->rollback();
+        http_response_code(409);
+        echo json_encode(['success' => false, 'message' => 'No preloaded keys available. Please contact the owner to add keys.']);
+        $conn->close();
+        return;
+    }
+    $key_string = $row['key_string'];
+    $stmt = $conn->prepare("UPDATE preloaded_keys SET status='used', used_by_user_id = ?, used_at = NOW() WHERE key_string = ?");
+    $stmt->bind_param("ss", $user_id, $key_string);
+    $stmt->execute();
     $max_devices = (int)($input['max_devices'] ?? 1);
     $duration = $input['duration_id'];
     $game_package = $input['package_id'];
@@ -1163,7 +1261,24 @@ function apiCreateLicense($input) {
         $conn->close();
         return;
     }
-    $key_string = bin2hex(random_bytes(11));
+    // Use owner preloaded key instead of generating randomly
+    ensurePreloadedKeysTable($conn);
+    $stmt = $conn->prepare("SELECT key_string FROM preloaded_keys WHERE status = 'available' ORDER BY created_at ASC LIMIT 1 FOR UPDATE");
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $row = $res ? $res->fetch_assoc() : null;
+    $stmt->close();
+    if (!$row) {
+        $conn->rollback();
+        http_response_code(409);
+        echo json_encode(['success' => false, 'message' => 'No preloaded keys available. Please contact the owner to add keys.']);
+        $conn->close();
+        return;
+    }
+    $key_string = $row['key_string'];
+    $stmt = $conn->prepare("UPDATE preloaded_keys SET status='used', used_by_user_id = ?, used_at = NOW() WHERE key_string = ?");
+    $stmt->bind_param("ss", $creator_id, $key_string);
+    $stmt->execute();
     $expires = NULL;
     $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
     $stmt = $conn->prepare($sql);
