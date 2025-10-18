@@ -264,7 +264,7 @@
                 }
 
                 window.renderApp();
-                if (window.dashboardView === 'licenses') displayRegisteredLicenses();
+                if (window.dashboardView === 'licenses') { displayRegisteredLicenses(); displayInventory(); }
                 if (window.dashboardView === 'manage-users') displayManagedUsers();
                 if (window.dashboardView === 'system-keys') displaySystemKeys();
                 if (window.dashboardView === 'create-referral') displayReferralCodes();
@@ -810,7 +810,6 @@
 
             const html = navItems.map(item => {
                 if (!window.checkRole(item.role)) return '';
-                if (item.view === 'license-creator' && !window.keyGenerationEnabled) return '';
                 const isActive = item.view === window.dashboardView;
                 const activeClass = isActive ? 'active' : '';
                 return `
@@ -845,7 +844,7 @@
             if (activeContainer) activeContainer.classList.remove('hidden');
             if (window.dashboardView === 'manage-users') { displayManagedUsers(); }
             if (window.dashboardView === 'system-keys') { displaySystemKeys(); }
-            if (window.dashboardView === 'licenses') { displayRegisteredLicenses(); }
+            if (window.dashboardView === 'licenses') { displayRegisteredLicenses(); displayInventory(); }
             if (window.dashboardView === 'license-creator') { window.updateLicenseTotal(); }
             if (window.dashboardView === 'create-referral') { displayReferralCodes(); }
             

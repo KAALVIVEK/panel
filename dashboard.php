@@ -549,12 +549,12 @@ function createLicense($user_id, $role, $input) {
     $conn = connectDB();
     $conn->begin_transaction();
 
-    // Select one available license matching duration (and brand if provided)
+    // Select one available license matching duration (and brand if provided), with a valid price
     if ($brand !== '') {
-        $stmt = $conn->prepare("SELECT license_id, price, key_string FROM licenses WHERE status='Issued' AND devices_used=0 AND duration = ? AND game_package = ? ORDER BY price ASC LIMIT 1 FOR UPDATE");
+        $stmt = $conn->prepare("SELECT license_id, price, key_string FROM licenses WHERE status='Issued' AND devices_used=0 AND price IS NOT NULL AND price > 0 AND duration = ? AND game_package = ? ORDER BY price ASC LIMIT 1 FOR UPDATE");
         $stmt->bind_param("ss", $duration, $brand);
     } else {
-        $stmt = $conn->prepare("SELECT license_id, price, key_string FROM licenses WHERE status='Issued' AND devices_used=0 AND duration = ? ORDER BY price ASC LIMIT 1 FOR UPDATE");
+        $stmt = $conn->prepare("SELECT license_id, price, key_string FROM licenses WHERE status='Issued' AND devices_used=0 AND price IS NOT NULL AND price > 0 AND duration = ? ORDER BY price ASC LIMIT 1 FOR UPDATE");
         $stmt->bind_param("s", $duration);
     }
     $stmt->execute();
