@@ -190,7 +190,7 @@
             };
         };
 
-        window.updateLicenseTotal = () => {
+        window.updateLicenseTotal = async () => {
             const durationSelect = document.getElementById('license-duration');
             const maxDevicesInput = document.getElementById('max-devices');
             const selectedDuration = durationSelect.value ? LICENSE_OPTIONS.find(opt => opt.id === durationSelect.value) : null;
@@ -202,19 +202,17 @@
             genBtn.disabled = true;
             genBtn.classList.add('opacity-50');
             if (selectedDuration) {
-                (async () => {
-                    const inv = await fetchAPI('list_available_inventory');
-                    const brandVal = (document.getElementById('license-brand')?.value || '').trim().toLowerCase();
-                    const items = Array.isArray(inv) ? inv : [];
-                    const matches = items.filter(it => it.duration === selectedDuration.id && (!brandVal || String(it.brand||'').toLowerCase() === brandVal));
-                    const px = matches.length ? Math.min(...matches.map(it => parseFloat(it.price)||0)) : 0;
-                    const computed = (px * maxDevices) || 0;
-                    costEl.textContent = computed.toFixed(2);
-                    costEl.classList.toggle('text-red-400', computed > window.userBalance);
-                    costEl.classList.toggle('text-green-400', computed <= window.userBalance);
-                    genBtn.disabled = computed === 0 || computed > window.userBalance;
-                    genBtn.classList.toggle('opacity-50', genBtn.disabled);
-                })();
+                const inv = await fetchAPI('list_available_inventory');
+                const brandVal = (document.getElementById('license-brand')?.value || '').trim().toLowerCase();
+                const items = Array.isArray(inv) ? inv : [];
+                const matches = items.filter(it => it.duration === selectedDuration.id && (!brandVal || String(it.brand||'').toLowerCase() === brandVal));
+                const px = matches.length ? Math.min(...matches.map(it => parseFloat(it.price)||0)) : 0;
+                const computed = (px * maxDevices) || 0;
+                costEl.textContent = computed.toFixed(2);
+                costEl.classList.toggle('text-red-400', computed > window.userBalance);
+                costEl.classList.toggle('text-green-400', computed <= window.userBalance);
+                genBtn.disabled = computed === 0 || computed > window.userBalance;
+                genBtn.classList.toggle('opacity-50', genBtn.disabled);
             } else {
                 costEl.textContent = '0.00';
             }
@@ -290,14 +288,10 @@
                         showMessage('License generation cancelled.', 'error');
                         return;
                     }
-                    const newKeyData = await fetchAPI('create_license', {
-                        package_id: packageId,
-                        brand: brand,
-                        duration_id: durationId
-                    });
+                    const newKeyData = await fetchAPI('create_license', { brand, duration_id: durationId });
                     if (newKeyData) {
                         window.userBalance = newKeyData.new_balance;
-                        window.updateLicenseTotal();
+                        await window.updateLicenseTotal();
                         window.copyToClipboard(newKeyData.key_string);
                         showMessage(`License key generated and copied! New Balance: ₹${window.userBalance.toFixed(2)}.`, 'success');
                         displayRegisteredLicenses();

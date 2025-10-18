@@ -355,7 +355,7 @@ function listAvailableInventory($role) {
         return;
     }
     $conn = connectDB();
-    $sql = "SELECT license_id, key_string, game_package AS brand, duration, price FROM licenses WHERE status='Issued' AND devices_used=0";
+    $sql = "SELECT license_id, key_string, game_package AS brand, duration, price FROM licenses WHERE status='Issued' AND devices_used=0 AND price IS NOT NULL AND price > 0";
     $result = $conn->query($sql);
     $items = [];
     if ($result) {
@@ -425,8 +425,8 @@ function purchaseManualLicense($user_id, $role, $input) {
     $stmt->bind_param("ds", $newBalance, $user_id);
     $stmt->execute();
     // Assign license to buyer
-    $stmt = $conn->prepare("UPDATE licenses SET creator_id = ?, price = ?, status='Issued' WHERE license_id = ?");
-    $stmt->bind_param("sdi", $user_id, $price, $license_id);
+    $stmt = $conn->prepare("UPDATE licenses SET creator_id = ?, status='Issued' WHERE license_id = ?");
+    $stmt->bind_param("si", $user_id, $license_id);
     $stmt->execute();
     $conn->commit();
     echo json_encode(['success' => true, 'data' => ['license_id' => $license_id, 'new_balance' => $newBalance]]);
@@ -551,10 +551,10 @@ function createLicense($user_id, $role, $input) {
 
     // Select one available license matching duration (and brand if provided)
     if ($brand !== '') {
-        $stmt = $conn->prepare("SELECT license_id, price, key_string FROM licenses WHERE status='Issued' AND devices_used=0 AND duration = ? AND game_package = ? LIMIT 1 FOR UPDATE");
+        $stmt = $conn->prepare("SELECT license_id, price, key_string FROM licenses WHERE status='Issued' AND devices_used=0 AND duration = ? AND game_package = ? ORDER BY price ASC LIMIT 1 FOR UPDATE");
         $stmt->bind_param("ss", $duration, $brand);
     } else {
-        $stmt = $conn->prepare("SELECT license_id, price, key_string FROM licenses WHERE status='Issued' AND devices_used=0 AND duration = ? LIMIT 1 FOR UPDATE");
+        $stmt = $conn->prepare("SELECT license_id, price, key_string FROM licenses WHERE status='Issued' AND devices_used=0 AND duration = ? ORDER BY price ASC LIMIT 1 FOR UPDATE");
         $stmt->bind_param("s", $duration);
     }
     $stmt->execute();
