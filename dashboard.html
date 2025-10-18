@@ -636,6 +636,33 @@
             }
         }
 
+        // Inventory: list owner-inserted keys (status Issued, devices_used 0) for users/resellers to buy
+        async function displayInventory() {
+            const data = await fetchAPI('list_available_inventory');
+            const tbody = document.getElementById('inventoryTableBody');
+            if (!tbody || !data) return;
+            tbody.innerHTML = data.map(item => `
+                <tr class="text-sm font-mono text-high-contrast hover:bg-white/5 transition-colors">
+                    <td class="py-3 text-primary">#${item.license_id}</td>
+                    <td class="py-3">${item.brand}</td>
+                    <td class="py-3">${item.duration}</td>
+                    <td class="py-3 text-green-400">₹${(parseFloat(item.price)||0).toFixed(2)}</td>
+                    <td class="py-3 text-right"><button class="glowing-button px-3 py-1 rounded" onclick="purchaseInventory(${item.license_id})">Buy</button></td>
+                </tr>
+            `).join('');
+        }
+
+        async function purchaseInventory(licenseId) {
+            if (!window.checkRole('user')) { showMessage('Authorization required.', 'error'); return; }
+            const res = await fetchAPI('purchase_manual_license', { license_id: licenseId });
+            if (res && typeof res.new_balance !== 'undefined') {
+                window.userBalance = res.new_balance;
+                showMessage('License purchased successfully.', 'success');
+                displayInventory();
+                displayRegisteredLicenses();
+            }
+        }
+
         async function displayReferralCodes() {
             const referralsData = await fetchAPI('load_referrals');
             if (referralsData) {
@@ -1285,6 +1312,30 @@
                             </table>
                             <p class="text-xs text-gray-600 mt-4">API Keys are now listed as Registered Keys/Licenses.
                             </p>
+                        </div>
+                    </div>
+
+                    <div class="widget-card rounded-xl p-6 mt-8">
+                        <div class="flex justify-between items-center mb-6">
+                            <h3 class="text-xl font-semibold text-white flex items-center">
+                                <svg data-lucide="shopping-cart" class="w-5 h-5 mr-2 text-cyber-pink"></svg>
+                                Available Keys (Owner Inventory)
+                            </h3>
+                            <button onclick="displayInventory()" class="glowing-button text-sm px-4 py-2 rounded-lg">Refresh</button>
+                        </div>
+                        <div class="overflow-x-auto text-gray-400">
+                            <table class="min-w-full divide-y divide-gray-700/50">
+                                <thead>
+                                    <tr class="text-xs uppercase tracking-wider text-gray-500 text-high-contrast border-b border-primary/50">
+                                        <th class="py-3 text-left"># ID</th>
+                                        <th class="py-3 text-left">Brand</th>
+                                        <th class="py-3 text-left">Duration</th>
+                                        <th class="py-3 text-left">Price</th>
+                                        <th class="py-3 text-right">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="inventoryTableBody" class="divide-y divide-gray-800"></tbody>
+                            </table>
                         </div>
                     </div>
                 </section>

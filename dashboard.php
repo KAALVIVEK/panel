@@ -144,6 +144,14 @@ try {
             ownerBulkAddManualLicenses($user_id, $role, $input);
             break;
 
+        // Inventory of owner-inserted keys and purchase by user/reseller
+        case 'list_available_inventory':
+            listAvailableInventory($role);
+            break;
+        case 'purchase_manual_license':
+            purchaseManualLicense($user_id, $role, $input);
+            break;
+
         case 'get_service_status':
             getServiceStatus();
             break;
@@ -331,6 +339,97 @@ function loadLicenses($user_id, $role) {
     }
     
     echo json_encode(['success' => true, 'data' => $licenses]);
+    $conn->close();
+}
+
+/**
+ * List owner-inserted, unassigned licenses as inventory for users/resellers to purchase.
+ * Business rule: status='Issued' and creator_id='OWNER' (or a special tag) can be treated as global inventory.
+ * Here we treat any license with creator_id IS NOT NULL and status='Issued' and devices_used=0 as available.
+ * Optionally filter by brand and duration.
+ */
+function listAvailableInventory($role) {
+    if (!checkRole($role, 'user')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    $sql = "SELECT license_id, key_string, game_package AS brand, duration, price FROM licenses WHERE status='Issued' AND devices_used=0";
+    $result = $conn->query($sql);
+    $items = [];
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $items[] = $row;
+        }
+    }
+    echo json_encode(['success' => true, 'data' => $items]);
+    $conn->close();
+}
+
+/**
+ * Purchase a manual license from inventory: assigns license to buyer and deducts price.
+ * Input: license_id
+ */
+function purchaseManualLicense($user_id, $role, $input) {
+    if (!checkRole($role, 'user')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Authorization required.']);
+        return;
+    }
+    $license_id = (int)($input['license_id'] ?? 0);
+    if (!$license_id) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Missing license_id.']);
+        return;
+    }
+    $conn = connectDB();
+    $conn->begin_transaction();
+    // Lock the license row for assignment
+    $stmt = $conn->prepare("SELECT price, status, devices_used FROM licenses WHERE license_id = ? FOR UPDATE");
+    $stmt->bind_param("i", $license_id);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row || $row['status'] !== 'Issued' || (int)$row['devices_used'] !== 0) {
+        $conn->rollback();
+        http_response_code(409);
+        echo json_encode(['success' => false, 'message' => 'License not available.']);
+        $conn->close();
+        return;
+    }
+    $price = (float)($row['price'] ?? 0);
+    if (!($price > 0)) {
+        $conn->rollback();
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'License price not set.']);
+        $conn->close();
+        return;
+    }
+    // Charge buyer
+    $stmt = $conn->prepare("SELECT balance FROM users WHERE user_id = ? FOR UPDATE");
+    $stmt->bind_param("s", $user_id);
+    $stmt->execute();
+    $balRow = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    $balance = (float)($balRow['balance'] ?? 0);
+    if ($balance < $price) {
+        $conn->rollback();
+        http_response_code(402);
+        echo json_encode(['success' => false, 'message' => 'Insufficient balance.']);
+        $conn->close();
+        return;
+    }
+    $newBalance = $balance - $price;
+    $stmt = $conn->prepare("UPDATE users SET balance = ? WHERE user_id = ?");
+    $stmt->bind_param("ds", $newBalance, $user_id);
+    $stmt->execute();
+    // Assign license to buyer
+    $stmt = $conn->prepare("UPDATE licenses SET creator_id = ?, price = ?, status='Issued' WHERE license_id = ?");
+    $stmt->bind_param("sdi", $user_id, $price, $license_id);
+    $stmt->execute();
+    $conn->commit();
+    echo json_encode(['success' => true, 'data' => ['license_id' => $license_id, 'new_balance' => $newBalance]]);
     $conn->close();
 }
 
