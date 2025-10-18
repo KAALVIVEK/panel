@@ -31,7 +31,8 @@
             { id: 'opt6', duration: '30 Days', days: 30, price: 600.00 },
             { id: 'opt7', duration: '60 Days', days: 60, price: 800.00 },
         ];
-        let BRAND_PRICING = {}; // Filled from backend for brands like 'ztrax', 'lethal'
+        let BRAND_PRICING = {}; // matrix map
+        let REGISTERED_BRANDS = []; // list for dropdowns
 
         
         function getQueryParams() {
@@ -219,7 +220,24 @@
         async function loadBrandPricing() {
             const data = await fetchAPI('get_brand_pricing');
             if (data) {
-                BRAND_PRICING = data || {};
+                BRAND_PRICING = data.matrix || {};
+                REGISTERED_BRANDS = Array.isArray(data.brands) ? data.brands : Object.keys(BRAND_PRICING);
+                renderBrandDropdowns();
+            }
+        }
+
+        function renderBrandDropdowns() {
+            const brandInput = document.getElementById('license-brand');
+            if (brandInput && brandInput.tagName.toLowerCase() === 'select') {
+                brandInput.innerHTML = REGISTERED_BRANDS.map(b => `<option value="${b}">${b}</option>`).join('');
+            }
+            const ownerBrand = document.getElementById('brand-name');
+            if (ownerBrand && ownerBrand.tagName.toLowerCase() === 'select') {
+                ownerBrand.innerHTML = REGISTERED_BRANDS.map(b => `<option value="${b}">${b}</option>`).join('');
+            }
+            const manualBrand = document.getElementById('manual-brand');
+            if (manualBrand && manualBrand.tagName.toLowerCase() === 'select') {
+                manualBrand.innerHTML = REGISTERED_BRANDS.map(b => `<option value="${b}">${b}</option>`).join('');
             }
         }
 
@@ -499,6 +517,23 @@
             if (data && data.api_key) {
                 copyToClipboard(data.api_key);
                 showMessage(`API Key generated and copied. Amount: ₹${data.amount.toFixed(2)}`, 'success');
+            }
+        };
+
+        window.ownerBulkAddManual = async (event) => {
+            event.preventDefault();
+            if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
+            const brand = document.getElementById('bulk-brand').value;
+            const duration = document.getElementById('bulk-duration').value;
+            const price = parseFloat(document.getElementById('bulk-price').value);
+            const raw = document.getElementById('bulk-keys').value || '';
+            const keys = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            if (!brand || !duration || !(price >= 0) || keys.length === 0) { showMessage('Fill brand, duration, price, and keys.', 'error'); return; }
+            const data = await fetchAPI('owner_bulk_add_manual_licenses', { brand, duration_id: duration, price, keys });
+            if (data) {
+                showMessage(`Bulk upload done. Inserted: ${data.inserted}, Duplicates: ${data.duplicates}, Failed: ${data.failed}`, 'success');
+                document.getElementById('bulk-keys').value = '';
+                displayRegisteredLicenses();
             }
         };
 
@@ -874,9 +909,11 @@
                         // Toggle owner-only sections visibility
                         const ownerSection1 = document.getElementById('ownerBrandPricingSection');
                         const ownerSection2 = document.getElementById('ownerManualLicenseSection');
+                        const ownerSection3 = document.getElementById('ownerBulkManualSection');
                         const isOwner = window.checkRole('owner');
                         if (ownerSection1) ownerSection1.classList.toggle('hidden', !isOwner);
                         if (ownerSection2) ownerSection2.classList.toggle('hidden', !isOwner);
+                        if (ownerSection3) ownerSection3.classList.toggle('hidden', !isOwner);
                     }
                 });
                 loadBrandPricing();
@@ -1315,7 +1352,7 @@
                             <div id="ownerBrandPricingSection" class="p-4 widget-card rounded-lg border-primary/30 hidden">
                                 <h4 class="text-white font-semibold mb-2">Brand Pricing</h4>
                                 <form class="grid grid-cols-1 md:grid-cols-6 gap-2" onsubmit="ownerSetBrandPrice(event)">
-                                    <input id="brand-name" type="text" placeholder="Brand (e.g., ztrax, lethal)" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
+                                    <select id="brand-name" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required></select>
                                     <select id="brand-duration" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required></select>
                                     <input id="brand-price-user" type="number" step="0.01" placeholder="User Price (₹)" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
                                     <input id="brand-price-reseller" type="number" step="0.01" placeholder="Reseller Price (₹)" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
@@ -1326,10 +1363,22 @@
                                 <h4 class="text-white font-semibold mb-2">Manual License (Owner)</h4>
                                 <form class="grid grid-cols-1 md:grid-cols-5 gap-2" onsubmit="ownerAddManualLicense(event)">
                                     <input id="manual-key-string" type="text" placeholder="KEY STRING" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
-                                    <input id="manual-brand" type="text" placeholder="Brand (e.g., ztrax)" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
+                                    <select id="manual-brand" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required></select>
                                     <select id="manual-duration" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required></select>
                                     <input id="manual-price" type="number" step="0.01" placeholder="Price (₹)" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
                                     <button type="submit" class="glowing-button text-sm px-4 py-2 rounded-lg">Add Manual Key (1 device)</button>
+                                </form>
+                            </div>
+                            <div id="ownerBulkManualSection" class="p-4 widget-card rounded-lg border-primary/30 mt-2 hidden">
+                                <h4 class="text-white font-semibold mb-2">Bulk Manual Keys (Owner)</h4>
+                                <form class="space-y-3" onsubmit="ownerBulkAddManual(event)">
+                                    <div class="grid grid-cols-1 md:grid-cols-4 gap-2">
+                                        <select id="bulk-brand" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required></select>
+                                        <select id="bulk-duration" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required></select>
+                                        <input id="bulk-price" type="number" step="0.01" placeholder="Price (₹)" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required>
+                                        <button type="submit" class="glowing-button text-sm px-4 py-2 rounded-lg">Upload Keys</button>
+                                    </div>
+                                    <textarea id="bulk-keys" rows="6" placeholder="One KEY per line" class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg" required></textarea>
                                 </form>
                             </div>
                         </div>
@@ -1523,9 +1572,9 @@
                             <div>
                                 <label for="license-brand"
                                     class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Brand</label>
-                                <input id="license-brand" type="text" placeholder="e.g., ztrax or lethal" oninput="updateLicenseTotal()"
-                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
-                                <p class="text-xs text-gray-500 mt-1">Used only for pricing; stored as game label if manual owner add.</p>
+                                <select id="license-brand" onchange="updateLicenseTotal()"
+                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg"></select>
+                                <p class="text-xs text-gray-500 mt-1">Pricing uses selected brand and your role.</p>
                             </div>
 
                             <div>
