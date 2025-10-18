@@ -197,18 +197,24 @@
             const maxDevices = 1;
             let totalCost = 0;
             if (selectedDuration) {
-                const brand = (document.getElementById('license-brand')?.value || '').toLowerCase();
-                const tier = BRAND_PRICING?.[brand]?.[selectedDuration.id];
-                let unitPrice = selectedDuration.price;
-                if (tier && typeof tier === 'object') {
-                    const isReseller = (window.userRole === 'reseller' || window.userRole === 'admin' || window.userRole === 'owner');
-                    unitPrice = isReseller ? (typeof tier.reseller === 'number' ? tier.reseller : unitPrice)
-                                           : (typeof tier.user === 'number' ? tier.user : unitPrice);
-                } else if (typeof tier === 'number') {
-                    // Backward compatibility if pricing hasn't been updated yet
-                    unitPrice = tier;
+                // Compute price from live inventory (owner-set price), not hardcoded defaults
+                const brandVal = (document.getElementById('license-brand')?.value || '').trim().toLowerCase();
+                // Try to use already loaded INVENTORY table data if present
+                const invBody = document.getElementById('inventoryTableBody');
+                let rows = [];
+                if (invBody) {
+                    rows = Array.from(invBody.querySelectorAll('tr')).map(tr => {
+                        const tds = tr.querySelectorAll('td');
+                        return {
+                            brand: (tds[1]?.textContent || '').trim().toLowerCase(),
+                            duration: (tds[2]?.textContent || '').trim(),
+                            price: parseFloat((tds[3]?.textContent || '').replace(/[^0-9.]/g,'')) || 0
+                        };
+                    });
                 }
-                totalCost = unitPrice * maxDevices;
+                const matches = rows.filter(r => r.duration === selectedDuration.id && (!brandVal || r.brand === brandVal));
+                const px = matches.length ? Math.min(...matches.map(r => r.price)) : 0;
+                totalCost = px * maxDevices;
             }
             document.getElementById('licenseTotalCost').textContent = totalCost.toFixed(2);
             document.getElementById('licenseTotalCost').classList.toggle('text-red-400', totalCost > window.userBalance);
@@ -290,10 +296,7 @@
                     const newKeyData = await fetchAPI('create_license', {
                         package_id: packageId,
                         brand: brand,
-                        duration_id: durationId,
-                        days: selectedDuration.days,
-                        max_devices: maxDevices,
-                        cost: totalCost
+                        duration_id: durationId
                     });
                     if (newKeyData) {
                         window.userBalance = newKeyData.new_balance;
@@ -301,6 +304,7 @@
                         window.copyToClipboard(newKeyData.key_string);
                         showMessage(`License key generated and copied! New Balance: ₹${window.userBalance.toFixed(2)}.`, 'success');
                         displayRegisteredLicenses();
+                        displayInventory();
                         window.changeDashboardView('licenses');
                     }
                 });
