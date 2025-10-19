@@ -203,23 +203,14 @@
         window.updateLicenseTotal = () => {
             const durationSelect = document.getElementById('license-duration');
             const maxDevicesInput = document.getElementById('max-devices');
-            const gameSel = document.getElementById('license-game');
-            const bucket = (gameSel && gameSel.options[gameSel.selectedIndex]) ? (gameSel.options[gameSel.selectedIndex].getAttribute('data-bucket') || '_default_') : '_default_';
+            const productSel = document.getElementById('license-game');
+            const bucket = (productSel && productSel.value) ? productSel.value : '_default_';
             setCurrentBucket(bucket);
             renderDurationOptions();
             let selectedDuration = durationSelect.value ? LICENSE_OPTIONS.find(opt => opt.id === durationSelect.value) : null;
             const maxDevices = parseInt(maxDevicesInput.value) || 1;
             let totalCost = 0;
             if (selectedDuration) {
-                totalCost = selectedDuration.price * maxDevices;
-            } else if (durationSelect.value === 'custom') {
-                const hoursStr = prompt('Enter custom time: use h:<hours> or d:<days> (e.g., h:10 or d:3)', 'h:1');
-                if (!hoursStr) { durationSelect.value = LICENSE_OPTIONS[0].id; return window.updateLicenseTotal(); }
-                // Store in a hidden input for submission
-                let customDisplay = hoursStr.startsWith('d:') ? `${parseInt(hoursStr.slice(2),10)} Days` : `${parseInt(hoursStr.slice(2),10)} Hours`;
-                selectedDuration = { id: hoursStr, duration: customDisplay, days: null, price: LICENSE_OPTIONS[0].price };
-                // No automatic price change; owner pricing applies per device using nearest base (opt1)
-                document.getElementById('custom-duration-id').value = hoursStr;
                 totalCost = selectedDuration.price * maxDevices;
             }
             document.getElementById('licenseTotalCost').textContent = totalCost.toFixed(2);
@@ -263,7 +254,7 @@
             if (!window.checkRole('user')) { showMessage('Authorization required.', 'error'); return; }
             const totalCost = parseFloat(document.getElementById('licenseTotalCost').textContent);
             const maxDevices = parseInt(document.getElementById('max-devices').value) || 1;
-            const packageId = document.getElementById('license-game').value;
+            const packageId = document.getElementById('license-game').value; // now represents bucket/product name
             let durationId = document.getElementById('license-duration').value;
             const customId = document.getElementById('custom-duration-id').value;
             if (durationId === 'custom' && customId) { durationId = customId; }
@@ -278,6 +269,7 @@
                     }
                     const newKeyData = await fetchAPI('create_license', {
                         package_id: packageId,
+                        bucket: packageId,
                         duration_id: durationId,
                         days: selectedDuration.days,
                         max_devices: maxDevices,
@@ -860,13 +852,13 @@
             window.renderApp();
         };
 
-        function renderGameOptions() {
-            const gameSelect = document.getElementById('license-game');
-            if (!gameSelect) return;
-            gameSelect.innerHTML = GAMES.map((game, index) => `
-                <option value="${game.package}" data-bucket="${game.package.split('.').pop().toLowerCase()}" ${index === 0 ? 'selected' : ''}>
-                    ${game.name}
-                </option>
+        function renderProductOptions() {
+            const sel = document.getElementById('license-game');
+            if (!sel) return;
+            const buckets = Object.keys(PRICING).filter(b => b !== '_default_');
+            const opts = buckets.length ? buckets : ['_default_'];
+            sel.innerHTML = opts.map((b, idx) => `
+                <option value="${b}" ${idx === 0 ? 'selected' : ''}>${b === '_default_' ? 'Default' : b}</option>
             `).join('');
         }
 
@@ -878,21 +870,19 @@
                     ${option.duration} - ₹${option.price.toFixed(2)}/Device
                 </option>
             `).join('');
-            // Append custom entry
-            const customHtml = `
-                <option value="custom">Custom...</option>
-            `;
-            durationSelect.innerHTML = optionsHtml + customHtml;
+            durationSelect.innerHTML = optionsHtml;
         }
 
         document.addEventListener('DOMContentLoaded', () => {
-            renderGameOptions();
+            // Load pricing first, then render product list from it
             renderDurationOptions();
             if (loadSession()) {
                 // Default to licenses view if none specified
                 window.dashboardView = 'licenses'; 
                 window.loadInitialData();
                 syncPricing().then(() => {
+                    renderProductOptions();
+                    setCurrentBucket(document.getElementById('license-game')?.value || '_default_');
                     renderDurationOptions();
                     window.updateLicenseTotal();
                 });
