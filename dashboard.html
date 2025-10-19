@@ -913,7 +913,9 @@
                 window.loadInitialData();
                 syncPricing().then(() => {
                     renderProductOptions();
-                    setCurrentBucket(document.getElementById('license-game')?.value || '_default_');
+                    const sel = document.getElementById('license-game');
+                    const first = (sel && sel.value) ? sel.value : Object.keys(PRICING)[0] || '_default_';
+                    setCurrentBucket(first);
                     renderDurationOptions();
                     window.updateLicenseTotal();
                 });

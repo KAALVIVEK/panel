@@ -182,6 +182,10 @@ try {
             ownerUpdatePricing($user_id, $role, $input['pricing'] ?? []);
             break;
 
+        case 'get_catalog':
+            getCatalog($role);
+            break;
+
         // Token-based API (for bots/external integrations)
         case 'api_create_license':
             apiCreateLicense($input);
@@ -1273,6 +1277,30 @@ function getPricing($role) {
         }
     }
     echo json_encode(['success' => true, 'data' => $pricing]);
+    $conn->close();
+}
+
+/**
+ * Returns list of available buckets/products and their durations for UI building.
+ */
+function getCatalog($role) {
+    if (!checkRole($role, 'user')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    ensurePricingTable($conn);
+    $res = $conn->query("SELECT bucket, duration_id FROM pricing ORDER BY bucket, duration_id");
+    $catalog = [];
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $b = $row['bucket'] ?: '_default_';
+            if (!isset($catalog[$b])) { $catalog[$b] = []; }
+            $catalog[$b][] = $row['duration_id'];
+        }
+    }
+    echo json_encode(['success' => true, 'data' => $catalog]);
     $conn->close();
 }
 
