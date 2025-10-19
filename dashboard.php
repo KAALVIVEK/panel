@@ -402,23 +402,25 @@ function ensureSystemKeysTable($conn) {
 /** Pricing helpers **/
 function ensurePricingTable($conn) {
     $conn->query("CREATE TABLE IF NOT EXISTS pricing (
-        duration_id VARCHAR(16) PRIMARY KEY,
+        duration_id VARCHAR(16) NOT NULL,
+        bucket VARCHAR(64) NULL,
         price DECIMAL(10,2) NOT NULL,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_bucket_duration (bucket, duration_id)
     )");
+    // Schema upgrades for legacy tables
+    $hasBucket = $conn->query("SHOW COLUMNS FROM pricing LIKE 'bucket'");
+    if ($hasBucket && $hasBucket->num_rows === 0) {
+        $conn->query("ALTER TABLE pricing ADD COLUMN bucket VARCHAR(64) NULL");
+    }
+    $idxRes = $conn->query("SHOW INDEX FROM pricing WHERE Key_name = 'uniq_bucket_duration'");
+    if (!$idxRes || $idxRes->num_rows === 0) {
+        // Best-effort; ignore if fails due to duplicates
+        @$conn->query("ALTER TABLE pricing ADD UNIQUE KEY uniq_bucket_duration (bucket, duration_id)");
+    }
 }
 
-function getDefaultPricing() {
-    return [
-        'opt1' => 30.00,
-        'opt2' => 60.00,
-        'opt3' => 150.00,
-        'opt4' => 250.00,
-        'opt5' => 400.00,
-        'opt6' => 600.00,
-        'opt7' => 800.00,
-    ];
-}
+function getDefaultPricing() { return []; }
 
 /**
  * Claims the next available pre-added key from system_keys.
@@ -520,7 +522,7 @@ function createLicense($user_id, $role, $input) {
     $key_string = $claimed['key_string'];
     // If owner provided a specific duration on the key, use it; else use selected duration
     $duration = $claimed['duration'] ?: $input['duration_id'];
-    $max_devices = (int)($input['max_devices'] ?? 1);
+    $max_devices = 1; // fixed to 1 device per request
     $game_package = $input['package_id'];
     $days = $input['days'] ?? null; 
     $expires = NULL; // start on first use (activation)
@@ -1261,10 +1263,14 @@ function getPricing($role) {
     }
     $conn = connectDB();
     ensurePricingTable($conn);
-    $res = $conn->query("SELECT duration_id, price FROM pricing");
-    $pricing = getDefaultPricing();
+    $res = $conn->query("SELECT bucket, duration_id, price FROM pricing ORDER BY bucket, duration_id");
+    $pricing = [];
     if ($res) {
-        while ($row = $res->fetch_assoc()) { $pricing[$row['duration_id']] = (float)$row['price']; }
+        while ($row = $res->fetch_assoc()) {
+            $bucketKey = $row['bucket'] ?: '_default_';
+            if (!isset($pricing[$bucketKey])) { $pricing[$bucketKey] = []; }
+            $pricing[$bucketKey][$row['duration_id']] = (float)$row['price'];
+        }
     }
     echo json_encode(['success' => true, 'data' => $pricing]);
     $conn->close();
@@ -1286,19 +1292,24 @@ function ownerUpdatePricing($user_id, $role, $pricing) {
     }
     $conn = connectDB();
     ensurePricingTable($conn);
-    $stmt = $conn->prepare("INSERT INTO pricing (duration_id, price) VALUES (?, ?) ON DUPLICATE KEY UPDATE price=VALUES(price)");
+    $stmt = $conn->prepare("INSERT INTO pricing (bucket, duration_id, price) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE price=VALUES(price)");
     if (!$stmt) {
         http_response_code(500);
         echo json_encode(['success' => false, 'message' => 'Preparation failed.']);
         $conn->close();
         return;
     }
-    foreach ($pricing as $durationId => $price) {
-        $did = (string)$durationId;
-        $p = (float)$price;
-        if (!preg_match('/^opt[1-7]$/', $did) || $p <= 0) { continue; }
-        $stmt->bind_param("sd", $did, $p);
-        $stmt->execute();
+    // Expect shape: { bucketName: { durationId: price, ... }, ... }
+    foreach ($pricing as $bucketName => $bucketPrices) {
+        $b = ($bucketName === '_default_' ? null : (string)$bucketName);
+        if (!is_array($bucketPrices)) { continue; }
+        foreach ($bucketPrices as $durationId => $price) {
+            $did = (string)$durationId;
+            $p = (float)$price;
+            if ($did === '' || $p <= 0) { continue; }
+            $stmt->bind_param("ssd", $b, $did, $p);
+            $stmt->execute();
+        }
     }
     echo json_encode(['success' => true]);
     $conn->close();

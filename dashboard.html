@@ -20,22 +20,27 @@
             { name: 'Call of Duty Mobile', package: 'com.activision.callofduty.shooter' }
         ];
 
-        // Pricing and License Options (prices loaded from backend)
-        const LICENSE_OPTIONS = [
-            { id: 'opt1', duration: '5 Hour', days: 0.208, price: 30.00 },
-            { id: 'opt2', duration: '1 Day', days: 1, price: 60.00 },
-            { id: 'opt3', duration: '3 Days', days: 3, price: 150.00 },
-            { id: 'opt4', duration: '7 Days', days: 7, price: 250.00 },
-            { id: 'opt5', duration: '15 Days', days: 15, price: 400.00 },
-            { id: 'opt6', duration: '30 Days', days: 30, price: 600.00 },
-            { id: 'opt7', duration: '60 Days', days: 60, price: 800.00 },
-        ];
+        // Pricing data structure loaded from backend: { bucketName: { durationId: price } }
+        let PRICING = {};
+        const LICENSE_OPTIONS = []; // will be built from PRICING for current bucket
+        let currentBucket = '';
         async function syncPricing() {
             const prices = await fetchAPI('get_pricing');
             if (!prices) return;
-            const map = prices;
-            LICENSE_OPTIONS.forEach(opt => {
-                if (typeof map[opt.id] !== 'undefined') opt.price = parseFloat(map[opt.id]);
+            PRICING = prices;
+        }
+        function setCurrentBucket(bucket) {
+            currentBucket = bucket || '_default_';
+            rebuildLicenseOptions();
+        }
+        function rebuildLicenseOptions() {
+            LICENSE_OPTIONS.length = 0;
+            const entries = PRICING[currentBucket] || {};
+            Object.keys(entries).forEach(id => {
+                // Present id as readable label (e.g., opt1 or custom like h:10)
+                let label = id.startsWith('h:') ? `${id.slice(2)} Hour` : id.startsWith('d:') ? `${id.slice(2)} Day` : id.toUpperCase();
+                if (label.endsWith(' Day') && parseInt(id.slice(2),10) > 1) label += 's';
+                LICENSE_OPTIONS.push({ id, duration: label, days: null, price: parseFloat(entries[id]) });
             });
         }
 
@@ -198,6 +203,10 @@
         window.updateLicenseTotal = () => {
             const durationSelect = document.getElementById('license-duration');
             const maxDevicesInput = document.getElementById('max-devices');
+            const gameSel = document.getElementById('license-game');
+            const bucket = (gameSel && gameSel.options[gameSel.selectedIndex]) ? (gameSel.options[gameSel.selectedIndex].getAttribute('data-bucket') || '_default_') : '_default_';
+            setCurrentBucket(bucket);
+            renderDurationOptions();
             let selectedDuration = durationSelect.value ? LICENSE_OPTIONS.find(opt => opt.id === durationSelect.value) : null;
             const maxDevices = parseInt(maxDevicesInput.value) || 1;
             let totalCost = 0;
@@ -855,7 +864,7 @@
             const gameSelect = document.getElementById('license-game');
             if (!gameSelect) return;
             gameSelect.innerHTML = GAMES.map((game, index) => `
-                <option value="${game.package}" ${index === 0 ? 'selected' : ''}>
+                <option value="${game.package}" data-bucket="${game.package.split('.').pop().toLowerCase()}" ${index === 0 ? 'selected' : ''}>
                     ${game.name}
                 </option>
             `).join('');
@@ -1557,9 +1566,8 @@
                                 <label for="max-devices"
                                     class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Max
                                     Devices</label>
-                                <input id="max-devices" type="number" value="1" min="1" required
-                                    oninput="updateLicenseTotal()"
-                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
+                                <input id="max-devices" type="number" value="1" min="1" max="1" required disabled
+                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg opacity-70 cursor-not-allowed">
                             </div>
 
                             <div>
