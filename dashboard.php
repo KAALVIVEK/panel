@@ -166,7 +166,14 @@ try {
             break;
 
         case 'owner_bulk_add_keys':
-            ownerBulkAddKeys($user_id, $role, $input['keys'] ?? [], $input['name'] ?? 'SYSTEM');
+            ownerBulkAddKeys(
+                $user_id,
+                $role,
+                $input['keys'] ?? [],
+                $input['name'] ?? 'SYSTEM',
+                $input['bucket'] ?? null,
+                $input['duration'] ?? null
+            );
             break;
         case 'get_pricing':
             getPricing($role);
@@ -378,12 +385,17 @@ function ensureSystemKeysTable($conn) {
         created_by_id VARCHAR(36) NOT NULL,
         status VARCHAR(16) NOT NULL DEFAULT 'Generated',
         duration VARCHAR(16) NULL,
+        bucket VARCHAR(64) NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )");
     // Best-effort schema upgrade if column didn't exist before (guarded)
     $hasDuration = $conn->query("SHOW COLUMNS FROM system_keys LIKE 'duration'");
     if ($hasDuration && $hasDuration->num_rows === 0) {
         $conn->query("ALTER TABLE system_keys ADD COLUMN duration VARCHAR(16) NULL");
+    }
+    $hasBucket = $conn->query("SHOW COLUMNS FROM system_keys LIKE 'bucket'");
+    if ($hasBucket && $hasBucket->num_rows === 0) {
+        $conn->query("ALTER TABLE system_keys ADD COLUMN bucket VARCHAR(64) NULL");
     }
 }
 
@@ -415,10 +427,19 @@ function getDefaultPricing() {
  */
 function claimPreAddedKey($conn) {
     ensureSystemKeysTable($conn);
-    // Lock next available key and mark it as Issued
-    $select = $conn->prepare("SELECT key_string, duration FROM system_keys WHERE status = 'Generated' ORDER BY created_at ASC LIMIT 1 FOR UPDATE");
-    if (!$select) { return null; }
-    $select->execute();
+    // Lock next available key and mark it as Issued; optional filter by bucket
+    $requestedBucket = $GLOBALS['input']['bucket'] ?? null;
+    $useBucket = ($requestedBucket && preg_match('/^[A-Za-z0-9._\-]{1,64}$/', $requestedBucket)) ? $requestedBucket : null;
+    if ($useBucket) {
+        $select = $conn->prepare("SELECT key_string, duration FROM system_keys WHERE status = 'Generated' AND bucket = ? ORDER BY created_at ASC LIMIT 1 FOR UPDATE");
+        if (!$select) { return null; }
+        $select->bind_param("s", $useBucket);
+        $select->execute();
+    } else {
+        $select = $conn->prepare("SELECT key_string, duration FROM system_keys WHERE status = 'Generated' ORDER BY created_at ASC LIMIT 1 FOR UPDATE");
+        if (!$select) { return null; }
+        $select->execute();
+    }
     $res = $select->get_result();
     $row = $res ? $res->fetch_assoc() : null;
     $select->close();
@@ -1190,7 +1211,7 @@ function generateSystemKey($user_id, $role, $input) {
 /**
  * Owner bulk add keys into pool.
  */
-function ownerBulkAddKeys($user_id, $role, $keys, $name) {
+function ownerBulkAddKeys($user_id, $role, $keys, $name, $bucket = null, $durationOverride = null) {
     if (!checkRole($role, 'owner')) {
         http_response_code(403);
         echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
@@ -1203,7 +1224,7 @@ function ownerBulkAddKeys($user_id, $role, $keys, $name) {
     }
     $conn = connectDB();
     ensureSystemKeysTable($conn);
-    $stmt = $conn->prepare("INSERT INTO system_keys (key_string, name, created_by_id, status, duration) VALUES (?, ?, ?, 'Generated', ?) ON DUPLICATE KEY UPDATE name=VALUES(name), duration=VALUES(duration)");
+    $stmt = $conn->prepare("INSERT INTO system_keys (key_string, name, created_by_id, status, duration, bucket) VALUES (?, ?, ?, 'Generated', ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), duration=VALUES(duration), bucket=VALUES(bucket)");
     if (!$stmt) {
         http_response_code(500);
         echo json_encode(['success' => false, 'message' => 'Preparation failed.']);
@@ -1212,15 +1233,17 @@ function ownerBulkAddKeys($user_id, $role, $keys, $name) {
     }
     $added = 0; $skipped = 0;
     $defaultDuration = null; // optional default duration
-    if (isset($GLOBALS['input']['duration']) && is_string($GLOBALS['input']['duration'])) {
-        $d = trim($GLOBALS['input']['duration']);
+    if (is_string($durationOverride)) {
+        $d = trim($durationOverride);
         if ($d === '' || preg_match('/^(h:\\d{1,5}|d:\\d{1,5})$/', $d)) { $defaultDuration = $d ?: null; }
     }
+    $bucketClean = null;
+    if (is_string($bucket) && preg_match('/^[A-Za-z0-9._\-]{1,64}$/', $bucket)) { $bucketClean = $bucket; }
     foreach ($keys as $k) {
         $key = trim($k);
         if ($key === '' || !preg_match('/^[A-Za-z0-9._\-]{6,64}$/', $key)) { $skipped++; continue; }
         $dur = $defaultDuration;
-        $stmt->bind_param("ssss", $key, $name, $user_id, $dur);
+        $stmt->bind_param("sssss", $key, $name, $user_id, $dur, $bucketClean);
         if ($stmt->execute()) { $added++; } else { $skipped++; }
     }
     echo json_encode(['success' => true, 'data' => ['added' => $added, 'skipped' => $skipped]]);
