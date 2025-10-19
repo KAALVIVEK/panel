@@ -198,10 +198,19 @@
         window.updateLicenseTotal = () => {
             const durationSelect = document.getElementById('license-duration');
             const maxDevicesInput = document.getElementById('max-devices');
-            const selectedDuration = durationSelect.value ? LICENSE_OPTIONS.find(opt => opt.id === durationSelect.value) : null;
+            let selectedDuration = durationSelect.value ? LICENSE_OPTIONS.find(opt => opt.id === durationSelect.value) : null;
             const maxDevices = parseInt(maxDevicesInput.value) || 1;
             let totalCost = 0;
             if (selectedDuration) {
+                totalCost = selectedDuration.price * maxDevices;
+            } else if (durationSelect.value === 'custom') {
+                const hoursStr = prompt('Enter custom time: use h:<hours> or d:<days> (e.g., h:10 or d:3)', 'h:1');
+                if (!hoursStr) { durationSelect.value = LICENSE_OPTIONS[0].id; return window.updateLicenseTotal(); }
+                // Store in a hidden input for submission
+                let customDisplay = hoursStr.startsWith('d:') ? `${parseInt(hoursStr.slice(2),10)} Days` : `${parseInt(hoursStr.slice(2),10)} Hours`;
+                selectedDuration = { id: hoursStr, duration: customDisplay, days: null, price: LICENSE_OPTIONS[0].price };
+                // No automatic price change; owner pricing applies per device using nearest base (opt1)
+                document.getElementById('custom-duration-id').value = hoursStr;
                 totalCost = selectedDuration.price * maxDevices;
             }
             document.getElementById('licenseTotalCost').textContent = totalCost.toFixed(2);
@@ -246,8 +255,10 @@
             const totalCost = parseFloat(document.getElementById('licenseTotalCost').textContent);
             const maxDevices = parseInt(document.getElementById('max-devices').value) || 1;
             const packageId = document.getElementById('license-game').value;
-            const durationId = document.getElementById('license-duration').value;
-            const selectedDuration = LICENSE_OPTIONS.find(opt => opt.id === durationId);
+            let durationId = document.getElementById('license-duration').value;
+            const customId = document.getElementById('custom-duration-id').value;
+            if (durationId === 'custom' && customId) { durationId = customId; }
+            const selectedDuration = LICENSE_OPTIONS.find(opt => opt.id === durationId) || { duration: durationId.startsWith('h:') ? `${durationId.slice(2)} Hours` : durationId.startsWith('d:') ? `${durationId.slice(2)} Days` : 'Custom' };
             const gameName = GAMES.find(g => g.package === packageId).name;
             showConfirmationDialog('Confirm License Generation',
                 `You are about to generate a **${gameName}** license key for **${selectedDuration.duration}** costing **₹${totalCost.toFixed(2)}**. Deduct balance?`,
@@ -851,11 +862,16 @@
         function renderDurationOptions() {
             const durationSelect = document.getElementById('license-duration');
             if (!durationSelect) return;
-            durationSelect.innerHTML = LICENSE_OPTIONS.map((option, index) => `
+            const optionsHtml = LICENSE_OPTIONS.map((option, index) => `
                 <option value="${option.id}" ${index === 0 ? 'selected' : ''}>
                     ${option.duration} - ₹${option.price.toFixed(2)}/Device
                 </option>
             `).join('');
+            // Append custom entry
+            const customHtml = `
+                <option value="custom">Custom...</option>
+            `;
+            durationSelect.innerHTML = optionsHtml + customHtml;
         }
 
         document.addEventListener('DOMContentLoaded', () => {
@@ -1549,6 +1565,7 @@
                                     class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
                                     </select>
                             </div>
+                            <input type="hidden" id="custom-duration-id" value="">
 
                             <div class="pt-4 flex justify-between items-center">
                                 <span class="text-white font-medium text-lg">Your Total Balance:</span>

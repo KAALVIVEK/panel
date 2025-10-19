@@ -335,6 +335,15 @@ function loadLicenses($user_id, $role) {
  * Maps duration id to hours for expiry computation.
  */
 function getDurationHours($duration_id) {
+    // Support custom formats: h:<hours> or d:<days>
+    if (is_string($duration_id)) {
+        if (preg_match('/^h:(\d{1,5})$/', $duration_id, $m)) {
+            return max(1, (int)$m[1]);
+        }
+        if (preg_match('/^d:(\d{1,5})$/', $duration_id, $m)) {
+            return max(1, (int)$m[1]) * 24;
+        }
+    }
     $map = [
         'opt1' => 5,     // 5 hours
         'opt2' => 24,    // 1 day
