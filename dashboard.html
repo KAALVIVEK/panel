@@ -508,16 +508,18 @@
 
         window.ownerBulkAddKeys = async () => {
             if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
-            const name = (document.getElementById('owner-keys-name').value || 'SYSTEM').trim();
+            const bucket = (document.getElementById('owner-keys-bucket').value || '').trim();
             const raw = (document.getElementById('owner-keys-text').value || '');
             const keys = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
             const duration = (document.getElementById('owner-keys-duration').value || '').trim();
+            if (bucket === '') { showMessage('Please enter product/bucket name.', 'error'); return; }
             if (keys.length === 0) { showMessage('No keys to add.', 'error'); return; }
-            const res = await fetchAPI('owner_bulk_add_keys', { name, keys, duration });
+            const res = await fetchAPI('owner_bulk_add_keys', { name: bucket, keys, duration, bucket });
             if (res && typeof res.added !== 'undefined') {
                 showMessage(`Added ${res.added}, skipped ${res.skipped}.`, 'success');
                 document.getElementById('owner-keys-text').value = '';
                 document.getElementById('owner-keys-duration').value = '';
+                document.getElementById('owner-keys-bucket').value = '';
                 displaySystemKeys();
             }
         };
@@ -527,35 +529,64 @@
             if (!wrap) return;
             const pricing = await fetchAPI('get_pricing');
             if (!pricing) return;
-            const rows = [
-                { id: 'opt1', label: '5 Hour' },
-                { id: 'opt2', label: '1 Day' },
-                { id: 'opt3', label: '3 Days' },
-                { id: 'opt4', label: '7 Days' },
-                { id: 'opt5', label: '15 Days' },
-                { id: 'opt6', label: '30 Days' },
-                { id: 'opt7', label: '60 Days' },
-            ];
-            wrap.innerHTML = rows.map(r => `
-                <div class="flex items-center justify-between p-2 widget-card rounded">
-                    <span class="text-white">${r.label}</span>
-                    <input data-pricing-id="${r.id}" type="number" min="0.01" step="0.01" value="${parseFloat(pricing[r.id] ?? 0).toFixed(2)}" class="w-32 bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg text-right">
-                </div>
-            `).join('');
+            // Render per bucket with dynamic duration rows
+            wrap.innerHTML = Object.keys(pricing).map(bucket => {
+                const rows = Object.entries(pricing[bucket]).map(([dur, price]) => `
+                    <div class="flex items-center justify-between p-2 widget-card rounded">
+                        <span class="text-white">${dur}</span>
+                        <input data-pricing-bucket="${bucket}" data-pricing-id="${dur}" type="number" min="0.01" step="0.01" value="${parseFloat(price).toFixed(2)}" class="w-32 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                    </div>
+                `).join('');
+                return `
+                    <div class="mb-4">
+                        <div class="text-sm text-cyber-pink font-semibold mb-2">${bucket === '_default_' ? 'Default' : bucket}</div>
+                        ${rows || '<div class="text-gray-500 text-sm">No durations set yet.</div>'}
+                        <div class="flex items-center gap-2 mt-2">
+                            <input placeholder="Duration (e.g., d:1 or h:10)" data-new-dur-bucket="${bucket}" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                            <input placeholder="Price" type="number" min="0.01" step="0.01" data-new-dur-price-bucket="${bucket}" class="w-32 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                            <button class="glowing-button px-3 py-2 rounded" onclick="addPricingRow('${bucket}')">Add</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
         }
 
         window.ownerSavePricing = async () => {
             if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
             const inputs = document.querySelectorAll('#pricing-editor [data-pricing-id]');
             const pricing = {};
-            inputs.forEach(inp => { pricing[inp.getAttribute('data-pricing-id')] = parseFloat(inp.value || '0'); });
+            inputs.forEach(inp => {
+                const b = inp.getAttribute('data-pricing-bucket') || '_default_';
+                const id = inp.getAttribute('data-pricing-id');
+                const val = parseFloat(inp.value || '0');
+                if (!pricing[b]) pricing[b] = {};
+                pricing[b][id] = val;
+            });
             const ok = await fetchAPI('owner_update_pricing', { pricing });
             if (ok) {
                 showMessage('Pricing saved.', 'success');
                 await syncPricing();
+                renderProductOptions();
+                setCurrentBucket(document.getElementById('license-game')?.value || '_default_');
                 renderDurationOptions();
                 window.updateLicenseTotal();
             }
+        };
+
+        window.addPricingRow = (bucket) => {
+            const durInput = document.querySelector(`[data-new-dur-bucket="${bucket}"]`);
+            const priceInput = document.querySelector(`[data-new-dur-price-bucket="${bucket}"]`);
+            if (!durInput || !priceInput) return;
+            const dur = (durInput.value || '').trim();
+            const price = parseFloat(priceInput.value || '0');
+            if (!dur || !(price > 0)) { showMessage('Enter duration and price.', 'error'); return; }
+            const container = durInput.closest('.mb-4');
+            const row = document.createElement('div');
+            row.className = 'flex items-center justify-between p-2 widget-card rounded';
+            row.innerHTML = `<span class="text-white">${dur}</span><input data-pricing-bucket="${bucket}" data-pricing-id="${dur}" type="number" min="0.01" step="0.01" value="${price.toFixed(2)}" class="w-32 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">`;
+            container.insertBefore(row, container.querySelector('.flex.items-center.gap-2'));
+            durInput.value = '';
+            priceInput.value = '';
         };
 
         window.resetUserLoginKey = (userId) => {
@@ -1409,8 +1440,8 @@
                             </h3>
                             <p class="text-gray-400 text-sm mb-4">Paste multiple keys (one per line). Allowed: A-Z a-z 0-9 . _ - (6-64 chars)</p>
                             <div class="space-y-3">
-                                <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Designation</label>
-                                <input id="owner-keys-name" type="text" placeholder="e.g., Telegram_Bot"
+                                <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Product/Bucket (e.g., ztrax, lethal)</label>
+                                <input id="owner-keys-bucket" type="text" placeholder="ztrax" required
                                        class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
                                 <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Keys</label>
                                 <textarea id="owner-keys-text" rows="8" placeholder="KEY_1\nKEY_2\nKEY_3"
@@ -1427,7 +1458,7 @@
                         <div class="widget-card rounded-xl p-6">
                             <h3 class="text-xl font-semibold text-primary mb-4 flex items-center">
                                 <svg data-lucide="tags" class="w-5 h-5 mr-2"></svg>
-                                Pricing Configuration
+                                Pricing Configuration (Per Product)
                             </h3>
                             <div id="pricing-editor" class="space-y-3"></div>
                             <button onclick="ownerSavePricing()" class="glowing-button w-full text-sm px-4 py-3 rounded-lg mt-3">
