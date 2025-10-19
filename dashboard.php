@@ -377,8 +377,11 @@ function ensureSystemKeysTable($conn) {
         name VARCHAR(128) NOT NULL,
         created_by_id VARCHAR(36) NOT NULL,
         status VARCHAR(16) NOT NULL DEFAULT 'Generated',
+        duration VARCHAR(16) NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )");
+    // Best-effort schema upgrade if column didn't exist before
+    @ $conn->query("ALTER TABLE system_keys ADD COLUMN duration VARCHAR(16) NULL");
 }
 
 /** Pricing helpers **/
@@ -410,7 +413,7 @@ function getDefaultPricing() {
 function claimPreAddedKey($conn) {
     ensureSystemKeysTable($conn);
     // Lock next available key and mark it as Issued
-    $select = $conn->prepare("SELECT key_string FROM system_keys WHERE status = 'Generated' ORDER BY created_at ASC LIMIT 1 FOR UPDATE");
+    $select = $conn->prepare("SELECT key_string, duration FROM system_keys WHERE status = 'Generated' ORDER BY created_at ASC LIMIT 1 FOR UPDATE");
     if (!$select) { return null; }
     $select->execute();
     $res = $select->get_result();
@@ -424,7 +427,11 @@ function claimPreAddedKey($conn) {
     $update->execute();
     $ok = $update->affected_rows === 1;
     $update->close();
-    return $ok ? $candidate : null;
+    if (!$ok) { return null; }
+    return [
+        'key_string' => $candidate,
+        'duration' => $row['duration'] ?? null,
+    ];
 }
 
 function ownerSetKeyGeneration($user_id, $role, $enabled) {
@@ -478,16 +485,18 @@ function createLicense($user_id, $role, $input) {
     }
     
     // Claim a pre-added key from the pool managed by owner
-    $key_string = claimPreAddedKey($conn);
-    if (!$key_string) {
+    $claimed = claimPreAddedKey($conn);
+    if (!$claimed) {
         $conn->rollback();
         http_response_code(409);
         echo json_encode(['success' => false, 'message' => 'No pre-added keys available. Contact owner.']);
         $conn->close();
         return;
     }
+    $key_string = $claimed['key_string'];
+    // If owner provided a specific duration on the key, use it; else use selected duration
+    $duration = $claimed['duration'] ?: $input['duration_id'];
     $max_devices = (int)($input['max_devices'] ?? 1);
-    $duration = $input['duration_id'];
     $game_package = $input['package_id'];
     $days = $input['days'] ?? null; 
     $expires = NULL; // start on first use (activation)
@@ -1191,7 +1200,7 @@ function ownerBulkAddKeys($user_id, $role, $keys, $name) {
     }
     $conn = connectDB();
     ensureSystemKeysTable($conn);
-    $stmt = $conn->prepare("INSERT INTO system_keys (key_string, name, created_by_id, status) VALUES (?, ?, ?, 'Generated') ON DUPLICATE KEY UPDATE name=VALUES(name)");
+    $stmt = $conn->prepare("INSERT INTO system_keys (key_string, name, created_by_id, status, duration) VALUES (?, ?, ?, 'Generated', ?) ON DUPLICATE KEY UPDATE name=VALUES(name), duration=VALUES(duration)");
     if (!$stmt) {
         http_response_code(500);
         echo json_encode(['success' => false, 'message' => 'Preparation failed.']);
@@ -1199,10 +1208,16 @@ function ownerBulkAddKeys($user_id, $role, $keys, $name) {
         return;
     }
     $added = 0; $skipped = 0;
+    $defaultDuration = null; // optional default duration
+    if (isset($GLOBALS['input']['duration']) && is_string($GLOBALS['input']['duration'])) {
+        $d = trim($GLOBALS['input']['duration']);
+        if ($d === '' || preg_match('/^(h:\\d{1,5}|d:\\d{1,5})$/', $d)) { $defaultDuration = $d ?: null; }
+    }
     foreach ($keys as $k) {
         $key = trim($k);
         if ($key === '' || !preg_match('/^[A-Za-z0-9._\-]{6,64}$/', $key)) { $skipped++; continue; }
-        $stmt->bind_param("sss", $key, $name, $user_id);
+        $dur = $defaultDuration;
+        $stmt->bind_param("ssss", $key, $name, $user_id, $dur);
         if ($stmt->execute()) { $added++; } else { $skipped++; }
     }
     echo json_encode(['success' => true, 'data' => ['added' => $added, 'skipped' => $skipped]]);
@@ -1351,14 +1366,17 @@ function apiCreateLicense($input) {
         return;
     }
     // Claim a pre-added key from the pool managed by owner
-    $key_string = claimPreAddedKey($conn);
-    if (!$key_string) {
+    $claimed = claimPreAddedKey($conn);
+    if (!$claimed) {
         $conn->rollback();
         http_response_code(409);
         echo json_encode(['success' => false, 'message' => 'No pre-added keys available. Contact owner.']);
         $conn->close();
         return;
     }
+    $key_string = $claimed['key_string'];
+    // If owner attached duration to the key, prefer it
+    $duration_id = $claimed['duration'] ?: $duration_id;
     $expires = NULL;
     $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
     $stmt = $conn->prepare($sql);

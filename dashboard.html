@@ -510,11 +510,13 @@
             const name = (document.getElementById('owner-keys-name').value || 'SYSTEM').trim();
             const raw = (document.getElementById('owner-keys-text').value || '');
             const keys = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            const duration = (document.getElementById('owner-keys-duration').value || '').trim();
             if (keys.length === 0) { showMessage('No keys to add.', 'error'); return; }
-            const res = await fetchAPI('owner_bulk_add_keys', { name, keys });
+            const res = await fetchAPI('owner_bulk_add_keys', { name, keys, duration });
             if (res && typeof res.added !== 'undefined') {
                 showMessage(`Added ${res.added}, skipped ${res.skipped}.`, 'success');
                 document.getElementById('owner-keys-text').value = '';
+                document.getElementById('owner-keys-duration').value = '';
                 displaySystemKeys();
             }
         };
@@ -1414,6 +1416,9 @@
                                 <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Keys</label>
                                 <textarea id="owner-keys-text" rows="8" placeholder="KEY_1\nKEY_2\nKEY_3"
                                           class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg"></textarea>
+                                <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Default Time (optional)</label>
+                                <input id="owner-keys-duration" type="text" placeholder="h:10 or d:3"
+                                       class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
                                 <button onclick="ownerBulkAddKeys()" class="glowing-button w-full text-sm px-4 py-3 rounded-lg mt-2">
                                     <span class="text-high-contrast">ADD KEYS TO POOL</span>
                                 </button>
