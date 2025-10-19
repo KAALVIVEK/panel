@@ -380,8 +380,11 @@ function ensureSystemKeysTable($conn) {
         duration VARCHAR(16) NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )");
-    // Best-effort schema upgrade if column didn't exist before
-    @ $conn->query("ALTER TABLE system_keys ADD COLUMN duration VARCHAR(16) NULL");
+    // Best-effort schema upgrade if column didn't exist before (guarded)
+    $hasDuration = $conn->query("SHOW COLUMNS FROM system_keys LIKE 'duration'");
+    if ($hasDuration && $hasDuration->num_rows === 0) {
+        $conn->query("ALTER TABLE system_keys ADD COLUMN duration VARCHAR(16) NULL");
+    }
 }
 
 /** Pricing helpers **/
