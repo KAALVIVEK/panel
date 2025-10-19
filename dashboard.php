@@ -165,6 +165,16 @@ try {
             ownerExtendAllLicenses($user_id, $role, (float)($input['extra_days'] ?? 0));
             break;
 
+        case 'owner_bulk_add_keys':
+            ownerBulkAddKeys($user_id, $role, $input['keys'] ?? [], $input['name'] ?? 'SYSTEM');
+            break;
+        case 'get_pricing':
+            getPricing($role);
+            break;
+        case 'owner_update_pricing':
+            ownerUpdatePricing($user_id, $role, $input['pricing'] ?? []);
+            break;
+
         // Token-based API (for bots/external integrations)
         case 'api_create_license':
             apiCreateLicense($input);
@@ -360,6 +370,27 @@ function ensureSystemKeysTable($conn) {
         status VARCHAR(16) NOT NULL DEFAULT 'Generated',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )");
+}
+
+/** Pricing helpers **/
+function ensurePricingTable($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS pricing (
+        duration_id VARCHAR(16) PRIMARY KEY,
+        price DECIMAL(10,2) NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )");
+}
+
+function getDefaultPricing() {
+    return [
+        'opt1' => 30.00,
+        'opt2' => 60.00,
+        'opt3' => 150.00,
+        'opt4' => 250.00,
+        'opt5' => 400.00,
+        'opt6' => 600.00,
+        'opt7' => 800.00,
+    ];
 }
 
 /**
@@ -1132,6 +1163,94 @@ function generateSystemKey($user_id, $role, $input) {
         $msg = (strpos($conn->error ?? '', 'Duplicate') !== false || ($conn->errno ?? 0) === 1062) ? 'Duplicate key. Already exists.' : 'System key creation failed.';
         echo json_encode(['success' => false, 'message' => $msg]);
     }
+    $conn->close();
+}
+
+/**
+ * Owner bulk add keys into pool.
+ */
+function ownerBulkAddKeys($user_id, $role, $keys, $name) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    if (!is_array($keys) || count($keys) === 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'No keys provided.']);
+        return;
+    }
+    $conn = connectDB();
+    ensureSystemKeysTable($conn);
+    $stmt = $conn->prepare("INSERT INTO system_keys (key_string, name, created_by_id, status) VALUES (?, ?, ?, 'Generated') ON DUPLICATE KEY UPDATE name=VALUES(name)");
+    if (!$stmt) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Preparation failed.']);
+        $conn->close();
+        return;
+    }
+    $added = 0; $skipped = 0;
+    foreach ($keys as $k) {
+        $key = trim($k);
+        if ($key === '' || !preg_match('/^[A-Za-z0-9._\-]{6,64}$/', $key)) { $skipped++; continue; }
+        $stmt->bind_param("sss", $key, $name, $user_id);
+        if ($stmt->execute()) { $added++; } else { $skipped++; }
+    }
+    echo json_encode(['success' => true, 'data' => ['added' => $added, 'skipped' => $skipped]]);
+    $conn->close();
+}
+
+/**
+ * Get pricing table (admin/owner).
+ */
+function getPricing($role) {
+    if (!checkRole($role, 'admin')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    ensurePricingTable($conn);
+    $res = $conn->query("SELECT duration_id, price FROM pricing");
+    $pricing = getDefaultPricing();
+    if ($res) {
+        while ($row = $res->fetch_assoc()) { $pricing[$row['duration_id']] = (float)$row['price']; }
+    }
+    echo json_encode(['success' => true, 'data' => $pricing]);
+    $conn->close();
+}
+
+/**
+ * Owner update pricing.
+ */
+function ownerUpdatePricing($user_id, $role, $pricing) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    if (!is_array($pricing) || empty($pricing)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid pricing payload.']);
+        return;
+    }
+    $conn = connectDB();
+    ensurePricingTable($conn);
+    $stmt = $conn->prepare("INSERT INTO pricing (duration_id, price) VALUES (?, ?) ON DUPLICATE KEY UPDATE price=VALUES(price)");
+    if (!$stmt) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Preparation failed.']);
+        $conn->close();
+        return;
+    }
+    foreach ($pricing as $durationId => $price) {
+        $did = (string)$durationId;
+        $p = (float)$price;
+        if (!preg_match('/^opt[1-7]$/', $did) || $p <= 0) { continue; }
+        $stmt->bind_param("sd", $did, $p);
+        $stmt->execute();
+    }
+    echo json_encode(['success' => true]);
     $conn->close();
 }
 

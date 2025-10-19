@@ -20,7 +20,7 @@
             { name: 'Call of Duty Mobile', package: 'com.activision.callofduty.shooter' }
         ];
 
-        // Key Data Structure for License Generation
+        // Pricing and License Options (prices loaded from backend)
         const LICENSE_OPTIONS = [
             { id: 'opt1', duration: '5 Hour', days: 0.208, price: 30.00 },
             { id: 'opt2', duration: '1 Day', days: 1, price: 60.00 },
@@ -30,6 +30,14 @@
             { id: 'opt6', duration: '30 Days', days: 30, price: 600.00 },
             { id: 'opt7', duration: '60 Days', days: 60, price: 800.00 },
         ];
+        async function syncPricing() {
+            const prices = await fetchAPI('get_pricing');
+            if (!prices) return;
+            const map = prices;
+            LICENSE_OPTIONS.forEach(opt => {
+                if (typeof map[opt.id] !== 'undefined') opt.price = parseFloat(map[opt.id]);
+            });
+        }
 
         
         function getQueryParams() {
@@ -486,6 +494,56 @@
             }
         };
 
+        window.ownerBulkAddKeys = async () => {
+            if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
+            const name = (document.getElementById('owner-keys-name').value || 'SYSTEM').trim();
+            const raw = (document.getElementById('owner-keys-text').value || '');
+            const keys = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            if (keys.length === 0) { showMessage('No keys to add.', 'error'); return; }
+            const res = await fetchAPI('owner_bulk_add_keys', { name, keys });
+            if (res && typeof res.added !== 'undefined') {
+                showMessage(`Added ${res.added}, skipped ${res.skipped}.`, 'success');
+                document.getElementById('owner-keys-text').value = '';
+                displaySystemKeys();
+            }
+        };
+
+        async function renderPricingEditor() {
+            const wrap = document.getElementById('pricing-editor');
+            if (!wrap) return;
+            const pricing = await fetchAPI('get_pricing');
+            if (!pricing) return;
+            const rows = [
+                { id: 'opt1', label: '5 Hour' },
+                { id: 'opt2', label: '1 Day' },
+                { id: 'opt3', label: '3 Days' },
+                { id: 'opt4', label: '7 Days' },
+                { id: 'opt5', label: '15 Days' },
+                { id: 'opt6', label: '30 Days' },
+                { id: 'opt7', label: '60 Days' },
+            ];
+            wrap.innerHTML = rows.map(r => `
+                <div class="flex items-center justify-between p-2 widget-card rounded">
+                    <span class="text-white">${r.label}</span>
+                    <input data-pricing-id="${r.id}" type="number" min="0.01" step="0.01" value="${parseFloat(pricing[r.id] ?? 0).toFixed(2)}" class="w-32 bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg text-right">
+                </div>
+            `).join('');
+        }
+
+        window.ownerSavePricing = async () => {
+            if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
+            const inputs = document.querySelectorAll('#pricing-editor [data-pricing-id]');
+            const pricing = {};
+            inputs.forEach(inp => { pricing[inp.getAttribute('data-pricing-id')] = parseFloat(inp.value || '0'); });
+            const ok = await fetchAPI('owner_update_pricing', { pricing });
+            if (ok) {
+                showMessage('Pricing saved.', 'success');
+                await syncPricing();
+                renderDurationOptions();
+                window.updateLicenseTotal();
+            }
+        };
+
         window.resetUserLoginKey = (userId) => {
             if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required.', 'error'); return; }
             showConfirmationDialog('Reset Login Key', `This will reset the application login key for user ${userId.substring(4)}... forcing them to re-login. Proceed?`, async (confirmed) => {
@@ -697,6 +755,7 @@
                 { view: 'system-keys', icon: 'lock-keyhole', label: 'System Keys', role: 'admin' },
                 { view: 'create-referral', icon: 'user-plus', label: 'Create Referral', role: 'admin' },
                 { view: 'manage-users', icon: 'users', label: 'Manage Users', role: 'admin' },
+                { view: 'owner-keys', icon: 'key-round', label: 'Owner Keys & Pricing', role: 'owner' },
                 { view: 'settings', icon: 'settings', label: 'System Settings', role: 'user' },
             ];
 
@@ -739,6 +798,7 @@
             if (activeContainer) activeContainer.classList.remove('hidden');
             if (window.dashboardView === 'manage-users') { displayManagedUsers(); }
             if (window.dashboardView === 'system-keys') { displaySystemKeys(); }
+            if (window.dashboardView === 'owner-keys') { renderPricingEditor(); }
             if (window.dashboardView === 'licenses') { displayRegisteredLicenses(); }
             if (window.dashboardView === 'license-creator') { window.updateLicenseTotal(); }
             if (window.dashboardView === 'create-referral') { displayReferralCodes(); }
@@ -805,6 +865,10 @@
                 // Default to licenses view if none specified
                 window.dashboardView = 'licenses'; 
                 window.loadInitialData();
+                syncPricing().then(() => {
+                    renderDurationOptions();
+                    window.updateLicenseTotal();
+                });
                 fetchAPI('get_service_status').then(data => {
                     const el = document.getElementById('svc-keygen');
                     if (el && data && typeof data.key_generation_enabled !== 'undefined') {
@@ -1314,6 +1378,43 @@
                                 </button>
                             </div>
                         </div>
+                </section>
+
+                <section id="content-owner-keys" class="dashboard-content-section hidden">
+                    <h2 class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-primary/50 pb-2">
+                        Owner Keys & Pricing</h2>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div class="widget-card rounded-xl p-6">
+                            <h3 class="text-xl font-semibold text-primary mb-4 flex items-center">
+                                <svg data-lucide="plus-circle" class="w-5 h-5 mr-2"></svg>
+                                Bulk Add Keys to Pool
+                            </h3>
+                            <p class="text-gray-400 text-sm mb-4">Paste multiple keys (one per line). Allowed: A-Z a-z 0-9 . _ - (6-64 chars)</p>
+                            <div class="space-y-3">
+                                <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Designation</label>
+                                <input id="owner-keys-name" type="text" placeholder="e.g., Telegram_Bot"
+                                       class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
+                                <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Keys</label>
+                                <textarea id="owner-keys-text" rows="8" placeholder="KEY_1\nKEY_2\nKEY_3"
+                                          class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg"></textarea>
+                                <button onclick="ownerBulkAddKeys()" class="glowing-button w-full text-sm px-4 py-3 rounded-lg mt-2">
+                                    <span class="text-high-contrast">ADD KEYS TO POOL</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="widget-card rounded-xl p-6">
+                            <h3 class="text-xl font-semibold text-primary mb-4 flex items-center">
+                                <svg data-lucide="tags" class="w-5 h-5 mr-2"></svg>
+                                Pricing Configuration
+                            </h3>
+                            <div id="pricing-editor" class="space-y-3"></div>
+                            <button onclick="ownerSavePricing()" class="glowing-button w-full text-sm px-4 py-3 rounded-lg mt-3">
+                                <span class="text-high-contrast">SAVE PRICING</span>
+                            </button>
+                        </div>
+                    </div>
                 </section>
 
                 <section id="content-create-referral" class="dashboard-content-section hidden">
