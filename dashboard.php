@@ -351,6 +351,42 @@ function getServiceStatus() {
     $conn->close();
 }
 
+/** Ensure system_keys table exists for pre-added keys pool */
+function ensureSystemKeysTable($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS system_keys (
+        key_string VARCHAR(64) PRIMARY KEY,
+        name VARCHAR(128) NOT NULL,
+        created_by_id VARCHAR(36) NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'Generated',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+}
+
+/**
+ * Claims the next available pre-added key from system_keys.
+ * Caller should be inside a transaction for row-level locks to apply.
+ * Returns key string or null when unavailable.
+ */
+function claimPreAddedKey($conn) {
+    ensureSystemKeysTable($conn);
+    // Lock next available key and mark it as Issued
+    $select = $conn->prepare("SELECT key_string FROM system_keys WHERE status = 'Generated' ORDER BY created_at ASC LIMIT 1 FOR UPDATE");
+    if (!$select) { return null; }
+    $select->execute();
+    $res = $select->get_result();
+    $row = $res ? $res->fetch_assoc() : null;
+    $select->close();
+    if (!$row || empty($row['key_string'])) { return null; }
+    $candidate = $row['key_string'];
+    $update = $conn->prepare("UPDATE system_keys SET status = 'Issued' WHERE key_string = ? AND status = 'Generated'");
+    if (!$update) { return null; }
+    $update->bind_param("s", $candidate);
+    $update->execute();
+    $ok = $update->affected_rows === 1;
+    $update->close();
+    return $ok ? $candidate : null;
+}
+
 function ownerSetKeyGeneration($user_id, $role, $enabled) {
     if (!checkRole($role, 'owner')) {
         http_response_code(403);
@@ -401,7 +437,15 @@ function createLicense($user_id, $role, $input) {
         return;
     }
     
-    $key_string = bin2hex(random_bytes(11)); 
+    // Claim a pre-added key from the pool managed by owner
+    $key_string = claimPreAddedKey($conn);
+    if (!$key_string) {
+        $conn->rollback();
+        http_response_code(409);
+        echo json_encode(['success' => false, 'message' => 'No pre-added keys available. Contact owner.']);
+        $conn->close();
+        return;
+    }
     $max_devices = (int)($input['max_devices'] ?? 1);
     $duration = $input['duration_id'];
     $game_package = $input['package_id'];
@@ -1033,6 +1077,7 @@ function loadSystemKeys($role) {
     }
     
     $conn = connectDB();
+    ensureSystemKeysTable($conn);
     $sql = "SELECT key_string, name, created_by_id, status FROM system_keys ORDER BY created_at DESC";
     $result = $conn->query($sql);
     
@@ -1058,8 +1103,21 @@ function generateSystemKey($user_id, $role, $input) {
     }
     
     $conn = connectDB();
-    $key_string = strtoupper(substr(bin2hex(random_bytes(16)), 0, 32));
-    $name = $input['name'] ?? 'SYSTEM';
+    ensureSystemKeysTable($conn);
+    $name = trim($input['name'] ?? 'SYSTEM');
+    $key_string = trim($input['key_string'] ?? '');
+    if ($key_string === '') {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Key string is required.']);
+        $conn->close();
+        return;
+    }
+    if (!preg_match('/^[A-Za-z0-9._\-]{6,64}$/', $key_string)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid key format. Use 6-64 chars [A-Za-z0-9._-].']);
+        $conn->close();
+        return;
+    }
 
     $sql = "INSERT INTO system_keys (key_string, name, created_by_id, status) 
             VALUES (?, ?, ?, 'Generated')";
@@ -1068,10 +1126,11 @@ function generateSystemKey($user_id, $role, $input) {
     
     if ($stmt->execute()) {
         http_response_code(201);
-        echo json_encode(['success' => true, 'message' => 'System key created.', 'data' => ['key_string' => $key_string]]);
+        echo json_encode(['success' => true, 'message' => 'System key added to pool.', 'data' => ['key_string' => $key_string]]);
     } else {
         http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'System key creation failed.']);
+        $msg = (strpos($conn->error ?? '', 'Duplicate') !== false || ($conn->errno ?? 0) === 1062) ? 'Duplicate key. Already exists.' : 'System key creation failed.';
+        echo json_encode(['success' => false, 'message' => $msg]);
     }
     $conn->close();
 }
@@ -1163,7 +1222,15 @@ function apiCreateLicense($input) {
         $conn->close();
         return;
     }
-    $key_string = bin2hex(random_bytes(11));
+    // Claim a pre-added key from the pool managed by owner
+    $key_string = claimPreAddedKey($conn);
+    if (!$key_string) {
+        $conn->rollback();
+        http_response_code(409);
+        echo json_encode(['success' => false, 'message' => 'No pre-added keys available. Contact owner.']);
+        $conn->close();
+        return;
+    }
     $expires = NULL;
     $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
     $stmt = $conn->prepare($sql);

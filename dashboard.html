@@ -461,12 +461,18 @@
             }
         };
 
-        window.generateSystemKey = () => {
+        window.generateSystemKey = async () => {
             if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required to generate system keys.', 'error'); return; }
             const keyName = document.getElementById('system-key-name').value;
             if (!keyName) { showMessage('Please enter a key designation.', 'error'); return; }
-            showMessage(`Generating system key for ${keyName}. (API call stub)`, 'success');
-            displaySystemKeys();
+            const keyValue = prompt('Enter pre-added key string (6-64 chars [A-Za-z0-9._-]):', '') || '';
+            if (!keyValue) { showMessage('Key string required.', 'error'); return; }
+            const data = await fetchAPI('generate_system_key', { name: keyName, key_string: keyValue });
+            if (data && data.key_string) {
+                copyToClipboard(data.key_string);
+                showMessage('System key added to pool and copied.', 'success');
+                displaySystemKeys();
+            }
         };
 
         window.generateOwnerApiKey = async () => {
