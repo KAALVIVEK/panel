@@ -30,7 +30,94 @@ function connectDB() {
     if ($conn->connect_error) {
         throw new Exception("Database connection failed: " . $conn->connect_error);
     }
+    ensureDashboardCoreTables($conn);
     return $conn;
+}
+
+/** Creates core tables used by dashboard APIs if missing */
+function ensureDashboardCoreTables($conn) {
+    // users
+    $conn->query("CREATE TABLE IF NOT EXISTS users (
+        user_id VARCHAR(36) NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        name VARCHAR(100) NOT NULL DEFAULT 'Ztrax User',
+        role ENUM('user','reseller','admin','owner') NOT NULL DEFAULT 'user',
+        balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        referred_by_id VARCHAR(36) NULL,
+        status ENUM('Active','Blocked') NOT NULL DEFAULT 'Active',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id),
+        UNIQUE KEY uniq_users_email (email),
+        KEY idx_users_referred_by (referred_by_id),
+        KEY idx_users_role (role)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // licenses
+    $conn->query("CREATE TABLE IF NOT EXISTS licenses (
+        license_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        key_string VARCHAR(64) NOT NULL,
+        game_package VARCHAR(100) NOT NULL,
+        duration VARCHAR(16) NOT NULL,
+        max_devices INT UNSIGNED NOT NULL DEFAULT 1,
+        devices_used INT UNSIGNED NOT NULL DEFAULT 0,
+        linked_device_id VARCHAR(64) NULL,
+        status ENUM('Issued','Active','Banned','Deleted') NOT NULL DEFAULT 'Issued',
+        creator_id VARCHAR(36) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires DATETIME NULL,
+        PRIMARY KEY (license_id),
+        UNIQUE KEY uniq_licenses_key_string (key_string),
+        KEY idx_licenses_creator (creator_id),
+        KEY idx_licenses_status (status),
+        KEY idx_licenses_created_at (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // referrals
+    $conn->query("CREATE TABLE IF NOT EXISTS referrals (
+        code CHAR(8) NOT NULL,
+        initial_balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        max_role ENUM('user','reseller','admin') NOT NULL DEFAULT 'user',
+        creator_id VARCHAR(36) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (code),
+        KEY idx_referrals_creator (creator_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // service flags
+    $conn->query("CREATE TABLE IF NOT EXISTS service_flags (
+        flag VARCHAR(64) PRIMARY KEY,
+        value VARCHAR(16) NOT NULL DEFAULT '0',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // system_keys
+    $conn->query("CREATE TABLE IF NOT EXISTS system_keys (
+        key_string VARCHAR(64) PRIMARY KEY,
+        name VARCHAR(128) NOT NULL,
+        created_by_id VARCHAR(36) NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'Generated',
+        duration VARCHAR(16) NULL,
+        bucket VARCHAR(64) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // pricing
+    $conn->query("CREATE TABLE IF NOT EXISTS pricing (
+        duration_id VARCHAR(16) NOT NULL,
+        bucket VARCHAR(64) NULL,
+        price DECIMAL(10,2) NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_bucket_duration (bucket, duration_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // api_keys
+    $conn->query("CREATE TABLE IF NOT EXISTS api_keys (
+        api_key CHAR(40) PRIMARY KEY,
+        amount DECIMAL(10,2) NOT NULL,
+        created_by_id VARCHAR(36) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 }
 
 /**

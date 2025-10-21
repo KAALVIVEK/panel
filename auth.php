@@ -18,6 +18,37 @@ define('DB_USER', 'ezyro_40038768');
 define('DB_PASS', '13579780');
 define('DB_NAME', 'ezyro_40038768_vivek');
 
+// --- Core table guards for auth flows ---
+function ensureAuthTables($conn) {
+    // users
+    $conn->query("CREATE TABLE IF NOT EXISTS users (
+        user_id VARCHAR(36) NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        name VARCHAR(100) NOT NULL DEFAULT 'Ztrax User',
+        role ENUM('user','reseller','admin','owner') NOT NULL DEFAULT 'user',
+        balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        referred_by_id VARCHAR(36) NULL,
+        status ENUM('Active','Blocked') NOT NULL DEFAULT 'Active',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id),
+        UNIQUE KEY uniq_users_email (email),
+        KEY idx_users_referred_by (referred_by_id),
+        KEY idx_users_role (role)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // referrals
+    $conn->query("CREATE TABLE IF NOT EXISTS referrals (
+        code CHAR(8) NOT NULL,
+        initial_balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        max_role ENUM('user','reseller','admin') NOT NULL DEFAULT 'user',
+        creator_id VARCHAR(36) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (code),
+        KEY idx_referrals_creator (creator_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
 // --- 2. Input Handling and Routing ---
 $input_json = file_get_contents('php://input');
 $input_data = json_decode($input_json, true);
