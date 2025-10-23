@@ -1787,12 +1787,35 @@ function listDurations($role, $product_id) {
     if (!checkRole($role, 'user')) { http_response_code(403); echo json_encode(['success'=>false,'message' => 'Authorization required.']); return; }
     if ($product_id <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message' => 'Invalid product id.']); return; }
     $conn = connectDB();
+    // Fetch product name for role-tiered pricing overlay
+    $pname = null;
+    $p = $conn->prepare("SELECT name FROM products WHERE id = ? LIMIT 1");
+    if ($p) { $p->bind_param("i", $product_id); $p->execute(); $prow = $p->get_result()->fetch_assoc(); $p->close(); $pname = $prow['name'] ?? null; }
+
     $stmt = $conn->prepare("SELECT id, duration_name, price FROM durations WHERE product_id = ? ORDER BY id");
     $stmt->bind_param("i", $product_id);
     $stmt->execute();
     $res = $stmt->get_result();
     $rows = [];
-    while ($r = $res->fetch_assoc()) { $rows[] = $r; }
+    ensurePricingTable($conn);
+    $tierCol = ($role === 'reseller') ? 'price_reseller' : (($role === 'admin' || $role === 'owner') ? 'price_admin' : 'price_user');
+    while ($r = $res->fetch_assoc()) {
+        // Overlay role-tiered pricing if present for this product name
+        if ($pname) {
+            $q = $conn->prepare("SELECT price, $tierCol AS tier_price FROM pricing WHERE bucket = ? AND duration_id = ? LIMIT 1");
+            if ($q) {
+                $q->bind_param("ss", $pname, $r['duration_name']);
+                $q->execute();
+                $pr = $q->get_result()->fetch_assoc();
+                $q->close();
+                if ($pr) {
+                    $eff = isset($pr['tier_price']) && (float)$pr['tier_price'] > 0 ? (float)$pr['tier_price'] : (float)($pr['price'] ?? 0);
+                    if ($eff > 0) { $r['price'] = $eff; }
+                }
+            }
+        }
+        $rows[] = $r;
+    }
     echo json_encode(['success'=>true, 'data'=>$rows]);
     $conn->close();
 }
