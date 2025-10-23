@@ -152,12 +152,18 @@
 
         window.openDurations = async (productId, productName) => {
             const rows = await ownerApi('owner_list_durations', { product_id: productId }) || [];
+            const safeName = (productName || '').replace(/'/g, "&#39;");
             const body = `
                 <div class="space-y-3">
-                    <div class="flex gap-2">
-                        <input id="new-duration-name" placeholder="Duration (e.g., d:1)" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
-                        <input id="new-duration-price" placeholder="User Price" type="number" min="0.01" step="0.01" class="w-40 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
-                        <button class="glowing-button px-4 py-2 rounded" onclick="addDuration(${productId})">Add</button>
+                    <div class="flex flex-col gap-2">
+                        <div class="flex gap-2">
+                            <input id="new-duration-name" placeholder="Duration (e.g., d:1)" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                            <input id="new-duration-price" placeholder="User Price" type="number" min="0.01" step="0.01" class="w-40 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                        </div>
+                        <div class="flex gap-2">
+                            <input id="new-duration-price-rao" placeholder="Reseller/Admin/Owner Price" type="number" min="0.01" step="0.01" class="w-56 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                            <button class="glowing-button px-4 py-2 rounded" onclick="addDuration(${productId}, '${safeName}')">Add</button>
+                        </div>
                     </div>
                     <div class="overflow-x-auto">
                         <table class="min-w-full divide-y divide-gray-700/50">
@@ -176,7 +182,7 @@
                                         <td class="py-2">${r.duration_name}</td>
                                         <td class="py-2">₹${parseFloat(r.price).toFixed(2)}</td>
                                         <td class="py-2 text-right">
-                                            <button class="text-red-400 px-2 py-1 bg-red-700/40 rounded" onclick="deleteDuration(${r.id}, ${productId})">Delete</button>
+                                            <button class="text-red-400 px-2 py-1 bg-red-700/40 rounded" onclick="deleteDuration(${r.id}, ${productId}, '${safeName}')">Delete</button>
                                         </td>
                                     </tr>
                                 `).join('')}
@@ -186,27 +192,39 @@
                 </div>`;
             document.getElementById('owner-product-modals').innerHTML = modalTemplate(`Durations - ${productName}`, body);
         };
-        window.addDuration = async (productId) => {
+        window.addDuration = async (productId, productName) => {
             const name = (document.getElementById('new-duration-name')?.value || '').trim();
-            const price = parseFloat(document.getElementById('new-duration-price')?.value || '0');
-            if (!name || !(price > 0)) { showMessage('Enter valid duration and price.', 'error'); return; }
-            const ok = await ownerApi('owner_upsert_duration', { product_id: productId, duration_name: name, price });
+            const userPrice = parseFloat(document.getElementById('new-duration-price')?.value || '0');
+            const raoPrice = parseFloat(document.getElementById('new-duration-price-rao')?.value || '0');
+            if (!name || !(userPrice > 0) || !(raoPrice > 0)) { showMessage('Enter duration, user price, and reseller/admin/owner price.', 'error'); return; }
+            const ok = await ownerApi('owner_upsert_duration', { product_id: productId, duration_name: name, price: userPrice });
             if (ok) {
-                showMessage('Duration upserted.', 'success');
-                openDurations(productId, '');
+                // Update tiered pricing for this product/duration
+                const payload = { pricing: {} };
+                payload.pricing[productName] = {};
+                payload.pricing[productName][name] = { user: userPrice, reseller: raoPrice, admin: raoPrice };
+                const pOk = await fetchAPI('owner_update_pricing', payload);
+                if (!pOk) { showMessage('Saved user price, but failed to update reseller/admin/owner price.', 'error'); }
+                showMessage('Duration and pricing saved.', 'success');
+                // clear inputs
+                const dn = document.getElementById('new-duration-name'); if (dn) dn.value = '';
+                const up = document.getElementById('new-duration-price'); if (up) up.value = '';
+                const rp = document.getElementById('new-duration-price-rao'); if (rp) rp.value = '';
+                openDurations(productId, productName);
                 // Refresh Create License duration dropdown if current product matches
                 const sel = document.getElementById('license-game');
                 if (sel && /^\d+$/.test(sel.value) && parseInt(sel.value, 10) === productId) {
+                    await syncPricing(true);
                     await loadDurationsForProduct(productId);
                     window.updateLicenseTotal();
                 }
             }
         };
-        window.deleteDuration = async (id, productId) => {
+        window.deleteDuration = async (id, productId, productName) => {
             const ok = await ownerApi('owner_delete_duration', { id });
             if (ok) {
                 showMessage('Duration deleted.', 'success');
-                openDurations(productId, '');
+                openDurations(productId, productName);
                 // Refresh Create License duration dropdown if current product matches
                 const sel = document.getElementById('license-game');
                 if (sel && /^\d+$/.test(sel.value) && parseInt(sel.value, 10) === productId) {
