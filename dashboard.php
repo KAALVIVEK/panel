@@ -188,6 +188,12 @@ $role = $input['role'] ?? null;
 // --- 4. API ROUTING ---
 try {
     switch ($action) {
+        case 'create_paytm_order':
+            createPaytmOrder($user_id, $role, (float)($input['amount'] ?? 0));
+            break;
+        case 'paytm_webhook':
+            paytmWebhook();
+            break;
         case 'load_initial_data':
             loadInitialData($user_id);
             break;
@@ -531,6 +537,82 @@ function ensureServiceFlagsTable($conn) {
     $conn->query("CREATE TABLE IF NOT EXISTS service_flags (flag VARCHAR(64) PRIMARY KEY, value VARCHAR(16) NOT NULL DEFAULT '0', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)");
 }
 
+function ensurePaymentsTables($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS payments (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        order_id VARCHAR(64) UNIQUE,
+        user_id VARCHAR(36) NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'INIT',
+        gateway VARCHAR(16) NOT NULL DEFAULT 'paytm',
+        payload TEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )");
+}
+
+function createPaytmOrder($user_id, $role, $amount) {
+    if (!checkRole($role, 'user')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Authorization required.']); return; }
+    if ($amount <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid amount.']); return; }
+    $conn = connectDB();
+    ensurePaymentsTables($conn);
+    $order_id = 'ORD' . date('YmdHis') . substr(md5(uniqid('', true)), 0, 6);
+    $stmt = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'INIT')");
+    $stmt->bind_param("ssd", $order_id, $user_id, $amount);
+    if (!$stmt->execute()) { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Failed to create order.']); $conn->close(); return; }
+    // Return minimal info; frontend will invoke Paytm with merchant config
+    echo json_encode(['success'=>true, 'data'=>['order_id'=>$order_id]]);
+    $conn->close();
+}
+
+function paytmWebhook() {
+    // Paytm server-to-server callback
+    require_once __DIR__ . '/paytm_checksum.php';
+    $inputJSON = file_get_contents('php://input');
+    $payload = json_decode($inputJSON, true);
+    if (!$payload) { http_response_code(400); echo json_encode(['success'=>false]); return; }
+    $orderId = $payload['ORDERID'] ?? $payload['orderId'] ?? null;
+    $status = $payload['STATUS'] ?? $payload['status'] ?? null;
+    $amount = (float)($payload['TXNAMOUNT'] ?? $payload['txnAmount'] ?? 0);
+    $checksum = $payload['CHECKSUMHASH'] ?? $payload['checksum'] ?? '';
+    // Verify checksum if merchant key provided via env
+    $merchantKey = getenv('PAYTM_MERCHANT_KEY') ?: '';
+    if ($merchantKey && !PaytmChecksum::verifySignature($payload, $merchantKey, $checksum)) {
+        http_response_code(400); echo json_encode(['success'=>false,'message'=>'Checksum failed']); return;
+    }
+    $conn = connectDB();
+    ensurePaymentsTables($conn);
+    // Fetch order and user
+    $stmt = $conn->prepare("SELECT user_id, amount, status FROM payments WHERE order_id = ? LIMIT 1");
+    $stmt->bind_param("s", $orderId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    if (!$row) { http_response_code(404); echo json_encode(['success'=>false,'message'=>'Order not found']); $conn->close(); return; }
+    // Idempotency: only process if not already success
+    if ($row['status'] === 'SUCCESS') { echo json_encode(['success'=>true]); $conn->close(); return; }
+    // Basic validation
+    if ($status === 'TXN_SUCCESS' || $status === 'SUCCESS') {
+        // Update payment
+        $upd = $conn->prepare("UPDATE payments SET status='SUCCESS', payload=? WHERE order_id = ?");
+        $pl = $inputJSON;
+        $upd->bind_param("ss", $pl, $orderId);
+        $upd->execute();
+        // Credit user balance
+        $uid = $row['user_id'];
+        $amt = $row['amount'];
+        $credit = $conn->prepare("UPDATE users SET balance = balance + ? WHERE user_id = ?");
+        $credit->bind_param("ds", $amt, $uid);
+        $credit->execute();
+        echo json_encode(['success'=>true]);
+    } else {
+        $upd = $conn->prepare("UPDATE payments SET status='FAILED', payload=? WHERE order_id = ?");
+        $pl = $inputJSON;
+        $upd->bind_param("ss", $pl, $orderId);
+        $upd->execute();
+        echo json_encode(['success'=>true]);
+    }
+    $conn->close();
+}
 function getServiceStatus() {
     $conn = connectDB();
     ensureServiceFlagsTable($conn);
