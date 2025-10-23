@@ -1151,7 +1151,14 @@
             if (window.dashboardView === 'system-keys') { displaySystemKeys(); }
             if (window.dashboardView === 'owner-keys') { renderPricingEditor(); renderOwnerProductSection(); }
             if (window.dashboardView === 'licenses') { displayRegisteredLicenses(); }
-            if (window.dashboardView === 'license-creator') { window.updateLicenseTotal(); }
+            if (window.dashboardView === 'license-creator') {
+                // Ensure latest pricing and durations are reflected
+                syncPricing().then(async () => {
+                    await renderProductOptions();
+                    await window.handleGameChange();
+                    window.updateLicenseTotal();
+                });
+            }
             if (window.dashboardView === 'create-referral') { displayReferralCodes(); }
             
             // Render settings data to update placeholder text
