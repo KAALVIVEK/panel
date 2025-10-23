@@ -24,8 +24,8 @@
         let PRICING = {};
         const LICENSE_OPTIONS = []; // will be built from PRICING for current bucket
         let currentBucket = '';
-        async function syncPricing() {
-            const prices = await fetchAPI('get_pricing');
+        async function syncPricing(full = false) {
+            const prices = await fetchAPI('get_pricing', full ? { full: true } : {});
             if (!prices) return;
             PRICING = prices;
         }
@@ -759,23 +759,36 @@
         async function renderPricingEditor() {
             const wrap = document.getElementById('pricing-editor');
             if (!wrap) return;
-            const pricing = await fetchAPI('get_pricing');
+            const pricing = await fetchAPI('get_pricing', { full: true });
             if (!pricing) return;
-            // Render per bucket with dynamic duration rows
+            // Render per bucket with role-tiered duration rows
             wrap.innerHTML = Object.keys(pricing).map(bucket => {
-                const rows = Object.entries(pricing[bucket]).map(([dur, price]) => `
-                    <div class="flex items-center justify-between p-2 widget-card rounded">
-                        <span class="text-white">${dur}</span>
-                        <input data-pricing-bucket="${bucket}" data-pricing-id="${dur}" type="number" min="0.01" step="0.01" value="${parseFloat(price).toFixed(2)}" class="w-32 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
-                    </div>
-                `).join('');
+                const rows = Object.entries(pricing[bucket]).map(([dur, tiers]) => {
+                    const user = tiers?.user ?? 0;
+                    const res = tiers?.reseller ?? 0;
+                    const adm = tiers?.admin ?? 0;
+                    return `
+                    <div class="p-2 widget-card rounded">
+                        <div class="flex items-center justify-between">
+                            <span class="text-white">${dur}</span>
+                            <div class="grid grid-cols-3 gap-2">
+                                <input aria-label="User price" data-pricing-bucket="${bucket}" data-pricing-id="${dur}" data-tier="user" type="number" min="0.01" step="0.01" value="${parseFloat(user).toFixed(2)}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right" placeholder="User">
+                                <input aria-label="Reseller price" data-pricing-bucket="${bucket}" data-pricing-id="${dur}" data-tier="reseller" type="number" min="0.01" step="0.01" value="${parseFloat(res).toFixed(2)}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right" placeholder="Reseller">
+                                <input aria-label="Admin price" data-pricing-bucket="${bucket}" data-pricing-id="${dur}" data-tier="admin" type="number" min="0.01" step="0.01" value="${parseFloat(adm).toFixed(2)}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right" placeholder="Admin">
+                            </div>
+                        </div>
+                    </div>`;
+                }).join('');
                 return `
                     <div class="mb-4">
                         <div class="text-sm text-cyber-pink font-semibold mb-2">${bucket === '_default_' ? 'Default' : bucket}</div>
+                        <div class="text-xs text-gray-400 mb-1">Set per-role prices</div>
                         ${rows || '<div class="text-gray-500 text-sm">No durations set yet.</div>'}
                         <div class="flex items-center gap-2 mt-2">
                             <input placeholder="Duration (e.g., d:1 or h:10)" data-new-dur-bucket="${bucket}" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
-                            <input placeholder="Price" type="number" min="0.01" step="0.01" data-new-dur-price-bucket="${bucket}" class="w-32 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                            <input placeholder="User" type="number" min="0.01" step="0.01" data-new-dur-price-user-bucket="${bucket}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                            <input placeholder="Reseller" type="number" min="0.01" step="0.01" data-new-dur-price-reseller-bucket="${bucket}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                            <input placeholder="Admin" type="number" min="0.01" step="0.01" data-new-dur-price-admin-bucket="${bucket}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
                             <button class="glowing-button px-3 py-2 rounded" onclick="addPricingRow('${bucket}')">Add</button>
                         </div>
                     </div>
@@ -790,14 +803,20 @@
             inputs.forEach(inp => {
                 const b = inp.getAttribute('data-pricing-bucket') || '_default_';
                 const id = inp.getAttribute('data-pricing-id');
+                const tier = inp.getAttribute('data-tier');
                 const val = parseFloat(inp.value || '0');
                 if (!pricing[b]) pricing[b] = {};
-                pricing[b][id] = val;
+                if (!pricing[b][id]) pricing[b][id] = {};
+                if (tier) {
+                    pricing[b][id][tier] = val;
+                } else {
+                    pricing[b][id] = val;
+                }
             });
             const ok = await fetchAPI('owner_update_pricing', { pricing });
             if (ok) {
                 showMessage('Pricing saved.', 'success');
-                await syncPricing();
+                await syncPricing(true);
                 await renderProductOptions();
                 await window.handleGameChange();
                 window.updateLicenseTotal();
@@ -806,18 +825,32 @@
 
         window.addPricingRow = (bucket) => {
             const durInput = document.querySelector(`[data-new-dur-bucket="${bucket}"]`);
-            const priceInput = document.querySelector(`[data-new-dur-price-bucket="${bucket}"]`);
-            if (!durInput || !priceInput) return;
+            const userInput = document.querySelector(`[data-new-dur-price-user-bucket="${bucket}"]`);
+            const resInput = document.querySelector(`[data-new-dur-price-reseller-bucket="${bucket}"]`);
+            const admInput = document.querySelector(`[data-new-dur-price-admin-bucket="${bucket}"]`);
+            if (!durInput || !userInput || !resInput || !admInput) return;
             const dur = (durInput.value || '').trim();
-            const price = parseFloat(priceInput.value || '0');
-            if (!dur || !(price > 0)) { showMessage('Enter duration and price.', 'error'); return; }
+            const pu = parseFloat(userInput.value || '0');
+            const pr = parseFloat(resInput.value || '0');
+            const pa = parseFloat(admInput.value || '0');
+            if (!dur || !(pu > 0) || !(pr > 0) || !(pa > 0)) { showMessage('Enter duration and all role prices.', 'error'); return; }
             const container = durInput.closest('.mb-4');
             const row = document.createElement('div');
-            row.className = 'flex items-center justify-between p-2 widget-card rounded';
-            row.innerHTML = `<span class="text-white">${dur}</span><input data-pricing-bucket="${bucket}" data-pricing-id="${dur}" type="number" min="0.01" step="0.01" value="${price.toFixed(2)}" class="w-32 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">`;
+            row.className = 'p-2 widget-card rounded';
+            row.innerHTML = `
+                <div class="flex items-center justify-between">
+                    <span class="text-white">${dur}</span>
+                    <div class="grid grid-cols-3 gap-2">
+                        <input data-pricing-bucket="${bucket}" data-pricing-id="${dur}" data-tier="user" type="number" min="0.01" step="0.01" value="${pu.toFixed(2)}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right" placeholder="User">
+                        <input data-pricing-bucket="${bucket}" data-pricing-id="${dur}" data-tier="reseller" type="number" min="0.01" step="0.01" value="${pr.toFixed(2)}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right" placeholder="Reseller">
+                        <input data-pricing-bucket="${bucket}" data-pricing-id="${dur}" data-tier="admin" type="number" min="0.01" step="0.01" value="${pa.toFixed(2)}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right" placeholder="Admin">
+                    </div>
+                </div>`;
             container.insertBefore(row, container.querySelector('.flex.items-center.gap-2'));
             durInput.value = '';
-            priceInput.value = '';
+            userInput.value = '';
+            resInput.value = '';
+            admInput.value = '';
         };
 
         window.resetUserLoginKey = (userId) => {

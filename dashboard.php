@@ -568,6 +568,9 @@ function ensurePricingTable($conn) {
         duration_id VARCHAR(16) NOT NULL,
         bucket VARCHAR(64) NULL,
         price DECIMAL(10,2) NOT NULL,
+        price_user DECIMAL(10,2) NULL,
+        price_reseller DECIMAL(10,2) NULL,
+        price_admin DECIMAL(10,2) NULL,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY uniq_bucket_duration (bucket, duration_id)
     )");
@@ -575,6 +578,18 @@ function ensurePricingTable($conn) {
     $hasBucket = $conn->query("SHOW COLUMNS FROM pricing LIKE 'bucket'");
     if ($hasBucket && $hasBucket->num_rows === 0) {
         $conn->query("ALTER TABLE pricing ADD COLUMN bucket VARCHAR(64) NULL");
+    }
+    $hasPriceUser = $conn->query("SHOW COLUMNS FROM pricing LIKE 'price_user'");
+    if ($hasPriceUser && $hasPriceUser->num_rows === 0) {
+        $conn->query("ALTER TABLE pricing ADD COLUMN price_user DECIMAL(10,2) NULL AFTER price");
+    }
+    $hasPriceReseller = $conn->query("SHOW COLUMNS FROM pricing LIKE 'price_reseller'");
+    if ($hasPriceReseller && $hasPriceReseller->num_rows === 0) {
+        $conn->query("ALTER TABLE pricing ADD COLUMN price_reseller DECIMAL(10,2) NULL AFTER price_user");
+    }
+    $hasPriceAdmin = $conn->query("SHOW COLUMNS FROM pricing LIKE 'price_admin'");
+    if ($hasPriceAdmin && $hasPriceAdmin->num_rows === 0) {
+        $conn->query("ALTER TABLE pricing ADD COLUMN price_admin DECIMAL(10,2) NULL AFTER price_reseller");
     }
     $idxRes = $conn->query("SHOW INDEX FROM pricing WHERE Key_name = 'uniq_bucket_duration'");
     if (!$idxRes || $idxRes->num_rows === 0) {
@@ -677,20 +692,27 @@ function createLicense($user_id, $role, $input) {
         if ($row) { $unitPrice = (float)$row['price']; }
     }
     if ($bucket !== null) {
-        $ps = $conn->prepare("SELECT price FROM pricing WHERE bucket = ? AND duration_id = ? LIMIT 1");
+        // Choose role-based tier when available
+        $tierCol = ($role === 'reseller') ? 'price_reseller' : (($role === 'admin' || $role === 'owner') ? 'price_admin' : 'price_user');
+        $ps = $conn->prepare("SELECT price, $tierCol AS tier_price FROM pricing WHERE bucket = ? AND duration_id = ? LIMIT 1");
         $ps->bind_param("ss", $bucket, $durationId);
         $ps->execute();
         $row = $ps->get_result()->fetch_assoc();
         $ps->close();
-        if ($row) { $unitPrice = (float)$row['price']; }
+        if ($row) {
+            $unitPrice = isset($row['tier_price']) && (float)$row['tier_price'] > 0 ? (float)$row['tier_price'] : (float)($row['price'] ?? 0);
+        }
     }
     if ($unitPrice <= 0) {
-        $ps = $conn->prepare("SELECT price FROM pricing WHERE bucket IS NULL AND duration_id = ? LIMIT 1");
+        $tierCol = ($role === 'reseller') ? 'price_reseller' : (($role === 'admin' || $role === 'owner') ? 'price_admin' : 'price_user');
+        $ps = $conn->prepare("SELECT price, $tierCol AS tier_price FROM pricing WHERE bucket IS NULL AND duration_id = ? LIMIT 1");
         $ps->bind_param("s", $durationId);
         $ps->execute();
         $row = $ps->get_result()->fetch_assoc();
         $ps->close();
-        if ($row) { $unitPrice = (float)$row['price']; }
+        if ($row) {
+            $unitPrice = isset($row['tier_price']) && (float)$row['tier_price'] > 0 ? (float)$row['tier_price'] : (float)($row['price'] ?? 0);
+        }
     }
     if ($unitPrice <= 0) {
         http_response_code(400);
@@ -1507,13 +1529,27 @@ function getPricing($role) {
     }
     $conn = connectDB();
     ensurePricingTable($conn);
-    $res = $conn->query("SELECT bucket, duration_id, price FROM pricing ORDER BY bucket, duration_id");
+    $input = json_decode(file_get_contents('php://input'), true) ?? [];
+    $full = !empty($input['full']) && checkRole($role, 'owner');
+    $res = $conn->query("SELECT bucket, duration_id, price, price_user, price_reseller, price_admin FROM pricing ORDER BY bucket, duration_id");
     $pricing = [];
     if ($res) {
         while ($row = $res->fetch_assoc()) {
             $bucketKey = $row['bucket'] ?: '_default_';
             if (!isset($pricing[$bucketKey])) { $pricing[$bucketKey] = []; }
-            $pricing[$bucketKey][$row['duration_id']] = (float)$row['price'];
+            if ($full) {
+                $pricing[$bucketKey][$row['duration_id']] = [
+                    'user' => isset($row['price_user']) ? (float)$row['price_user'] : (isset($row['price']) ? (float)$row['price'] : 0.0),
+                    'reseller' => isset($row['price_reseller']) ? (float)$row['price_reseller'] : (isset($row['price']) ? (float)$row['price'] : 0.0),
+                    'admin' => isset($row['price_admin']) ? (float)$row['price_admin'] : (isset($row['price']) ? (float)$row['price'] : 0.0),
+                ];
+            } else {
+                // Role-appropriate single price
+                $tier = ($role === 'reseller') ? 'price_reseller' : (($role === 'admin' || $role === 'owner') ? 'price_admin' : 'price_user');
+                $val = $row[$tier] ?? null;
+                if ($val === null || (float)$val <= 0) { $val = $row['price'] ?? 0; }
+                $pricing[$bucketKey][$row['duration_id']] = (float)$val;
+            }
         }
     }
     echo json_encode(['success' => true, 'data' => $pricing]);
@@ -1560,22 +1596,33 @@ function ownerUpdatePricing($user_id, $role, $pricing) {
     }
     $conn = connectDB();
     ensurePricingTable($conn);
-    $stmt = $conn->prepare("INSERT INTO pricing (bucket, duration_id, price) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE price=VALUES(price)");
-    if (!$stmt) {
-        http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'Preparation failed.']);
-        $conn->close();
-        return;
-    }
-    // Expect shape: { bucketName: { durationId: price, ... }, ... }
+    // We'll upsert role-tiered prices; accept two shapes:
+    // 1) { bucket: { durationId: number } }
+    // 2) { bucket: { durationId: { user: n1, reseller: n2, admin: n3 } } }
+    $stmt = $conn->prepare("INSERT INTO pricing (bucket, duration_id, price, price_user, price_reseller, price_admin) VALUES (?, ?, ?, ?, ?, ?) 
+        ON DUPLICATE KEY UPDATE 
+            price = COALESCE(VALUES(price), price),
+            price_user = VALUES(price_user),
+            price_reseller = VALUES(price_reseller),
+            price_admin = VALUES(price_admin)");
+    if (!$stmt) { http_response_code(500); echo json_encode(['success' => false, 'message' => 'Preparation failed.']); $conn->close(); return; }
     foreach ($pricing as $bucketName => $bucketPrices) {
         $b = ($bucketName === '_default_' ? null : (string)$bucketName);
         if (!is_array($bucketPrices)) { continue; }
-        foreach ($bucketPrices as $durationId => $price) {
+        foreach ($bucketPrices as $durationId => $val) {
             $did = (string)$durationId;
-            $p = (float)$price;
-            if ($did === '' || $p <= 0) { continue; }
-            $stmt->bind_param("ssd", $b, $did, $p);
+            if ($did === '') { continue; }
+            $base = null; $pu = null; $pr = null; $pa = null;
+            if (is_array($val)) {
+                $pu = isset($val['user']) ? (float)$val['user'] : null;
+                $pr = isset($val['reseller']) ? (float)$val['reseller'] : null;
+                $pa = isset($val['admin']) ? (float)$val['admin'] : null;
+                // Optional base price fallback
+                $base = isset($val['price']) ? (float)$val['price'] : null;
+            } else {
+                $base = (float)$val;
+            }
+            $stmt->bind_param("sssddd", $b, $did, $base, $pu, $pr, $pa);
             $stmt->execute();
         }
     }
