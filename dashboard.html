@@ -20,8 +20,9 @@
             { name: 'Call of Duty Mobile', package: 'com.activision.callofduty.shooter' }
         ];
 
-        // Pricing data structure loaded from backend: { bucketName: { durationId: price } }
+        // Pricing data structure loaded from backend: { bucketName: { durationId: price|{user,reseller,admin} } }
         let PRICING = {};
+        let PRICING_SELECTED_BUCKET = '_default_';
         const LICENSE_OPTIONS = []; // will be built from PRICING for current bucket
         let currentBucket = '';
         async function syncPricing(full = false) {
@@ -761,12 +762,25 @@
             if (!wrap) return;
             const pricing = await fetchAPI('get_pricing', { full: true });
             if (!pricing) return;
-            // Render per bucket with 2-tier rows: User and Reseller/Admin/Owner (same)
-            const buckets = Object.keys(pricing);
+            PRICING = pricing;
+            // Header with bucket selector and new-bucket input
+            const buckets = Object.keys(PRICING);
             if (buckets.length === 0) { buckets.push('_default_'); }
-            wrap.innerHTML = buckets.map(bucket => {
-                const data = pricing[bucket] || {};
-                const rows = Object.entries(data).map(([dur, tiers]) => {
+            if (!PRICING_SELECTED_BUCKET || !PRICING[PRICING_SELECTED_BUCKET]) {
+                PRICING_SELECTED_BUCKET = buckets[0] || '_default_';
+            }
+            const selector = `
+                <div class="flex items-center gap-2 mb-3">
+                    <label class="text-sm text-gray-400">Product/Bucket:</label>
+                    <select id="pricing-bucket-select" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                        ${buckets.map(b => `<option value="${b}" ${b===PRICING_SELECTED_BUCKET?'selected':''}>${b}</option>`).join('')}
+                    </select>
+                    <input id="pricing-new-bucket" placeholder="Add new (e.g., ztrax)" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                    <button class="glowing-button px-3 py-2 rounded" onclick="addPricingBucket()">Add</button>
+                </div>`;
+            const bucket = PRICING_SELECTED_BUCKET;
+            const data = PRICING[bucket] || {};
+            const rows = Object.entries(data).map(([dur, tiers]) => {
                     const user = (tiers && typeof tiers === 'object') ? (tiers.user ?? 0) : (parseFloat(tiers) || 0);
                     const rao = (tiers && typeof tiers === 'object') ? (tiers.reseller ?? tiers.admin ?? tiers.user ?? 0) : (parseFloat(tiers) || 0);
                     return `
@@ -779,21 +793,21 @@
                             </div>
                         </div>
                     </div>`;
-                }).join('');
-                return `
-                    <div class="mb-4">
-                        <div class="text-sm text-cyber-pink font-semibold mb-2">${bucket === '_default_' ? 'Default' : bucket}</div>
-                        <div class="text-xs text-gray-400 mb-1">Set User price, and a single price for Reseller/Admin/Owner</div>
-                        ${rows || '<div class="text-gray-500 text-sm">No durations set yet.</div>'}
-                        <div class="flex items-center gap-2 mt-2">
-                            <input placeholder="Duration (e.g., d:1 or h:10)" data-new-dur-bucket="${bucket}" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
-                            <input placeholder="User" type="number" min="0.01" step="0.01" data-new-dur-price-user-bucket="${bucket}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
-                            <input placeholder="Reseller/Admin/Owner" type="number" min="0.01" step="0.01" data-new-dur-price-rao-bucket="${bucket}" class="w-48 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
-                            <button class="glowing-button px-3 py-2 rounded" onclick="addPricingRow('${bucket}')">Add</button>
-                        </div>
-                    </div>
-                `;
             }).join('');
+            wrap.innerHTML = selector + `
+                <div class="mb-4">
+                    <div class="text-sm text-cyber-pink font-semibold mb-2">${bucket === '_default_' ? 'Default' : bucket}</div>
+                    <div class="text-xs text-gray-400 mb-1">Set User price, and a single price for Reseller/Admin/Owner</div>
+                    ${rows || '<div class="text-gray-500 text-sm">No durations set yet.</div>'}
+                    <div class="flex items-center gap-2 mt-2">
+                        <input placeholder="Duration (e.g., d:1 or h:10)" data-new-dur-bucket="${bucket}" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                        <input placeholder="User" type="number" min="0.01" step="0.01" data-new-dur-price-user-bucket="${bucket}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                        <input placeholder="Reseller/Admin/Owner" type="number" min="0.01" step="0.01" data-new-dur-price-rao-bucket="${bucket}" class="w-48 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                        <button class="glowing-button px-3 py-2 rounded" onclick="addPricingRow('${bucket}')">Add</button>
+                    </div>
+                </div>`;
+            const sel = document.getElementById('pricing-bucket-select');
+            if (sel) sel.onchange = () => { PRICING_SELECTED_BUCKET = sel.value || '_default_'; renderPricingEditor(); };
         }
 
         window.ownerSavePricing = async () => {
@@ -834,6 +848,16 @@
                 await window.handleGameChange();
                 window.updateLicenseTotal();
             }
+        };
+
+        window.addPricingBucket = () => {
+            const input = document.getElementById('pricing-new-bucket');
+            const name = (input?.value || '').trim();
+            if (!name || !/^[A-Za-z0-9._\-]{1,64}$/.test(name)) { showMessage('Enter a valid product/bucket name.', 'error'); return; }
+            if (!PRICING[name]) PRICING[name] = {};
+            PRICING_SELECTED_BUCKET = name;
+            input.value = '';
+            renderPricingEditor();
         };
 
         window.addPricingRow = (bucket) => {
