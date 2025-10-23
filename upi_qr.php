@@ -23,8 +23,20 @@ if ($httpcode === 200 && isset($result['body']['qrImage'])) {
     $qrImg = 'data:image/png;base64,' . $result['body']['qrImage'];
 } else {
     // Fallback to generic UPI deeplink QR
-    $upiLink = 'upi://pay?pa=' . urlencode(PAYTM_UPI_ID) . '&pn=' . urlencode('Payee') . '&am=' . urlencode($amount) . '&cu=INR&tn=' . urlencode('Order ' . $orderId) . '&tr=' . urlencode($orderId);
-    $qrImg = 'https://chart.googleapis.com/chart?chs=300x300&cht=qr&chl=' . urlencode($upiLink);
+    $upiId = PAYTM_UPI_ID;
+    $upiLink = 'upi://pay?pa=' . urlencode($upiId) . '&pn=' . urlencode('Payee') . '&am=' . urlencode($amount) . '&cu=INR&tn=' . urlencode('Order ' . $orderId) . '&tr=' . urlencode($orderId);
+    $qrSrc = 'https://chart.googleapis.com/chart?chs=300x300&cht=qr&chl=' . urlencode($upiLink);
+    // Try to fetch PNG and embed as base64 to avoid external hotlink issues
+    $ch2 = curl_init($qrSrc);
+    curl_setopt($ch2, CURLOPT_RETURNTRANSFER, true);
+    $png = curl_exec($ch2);
+    $code2 = curl_getinfo($ch2, CURLINFO_HTTP_CODE);
+    curl_close($ch2);
+    if ($png !== false && $code2 === 200) {
+        $qrImg = 'data:image/png;base64,' . base64_encode($png);
+    } else {
+        $qrImg = $qrSrc; // final fallback to direct URL
+    }
 }
 ?>
 <!doctype html>
@@ -44,7 +56,11 @@ if ($httpcode === 200 && isset($result['body']['qrImage'])) {
 <body>
 <div class="card">
   <h2>UPI PAYMENTS</h2>
-  <img src="<?php echo htmlspecialchars($qrImg, ENT_QUOTES); ?>" alt="UPI QR">
+  <?php if ($qrImg): ?>
+    <img src="<?php echo htmlspecialchars($qrImg, ENT_QUOTES); ?>" alt="UPI QR">
+  <?php else: ?>
+    <div class="muted">QR could not be generated. Please set a valid PAYTM_UPI_ID in config.php.</div>
+  <?php endif; ?>
   <p class="muted">Scan to pay ₹<?php echo htmlspecialchars($amount, ENT_QUOTES); ?></p>
   <p class="muted">Order ID: <?php echo htmlspecialchars($orderId, ENT_QUOTES); ?></p>
   <p class="muted">Expires in <span id="timer" class="timer">05:00</span></p>
