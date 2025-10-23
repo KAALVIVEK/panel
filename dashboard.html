@@ -57,7 +57,6 @@
                     <td class="py-2 text-right">
                         <button class="text-red-400 px-2 py-1 bg-red-700/40 rounded" onclick="deleteProduct(${p.id})">Delete</button>
                         <button class="text-primary px-2 py-1 bg-primary/20 rounded ml-2" onclick="openDurations(${p.id}, '${p.name.replace(/'/g, "&#39;")}')">Durations</button>
-                        <button class="text-cyber-pink px-2 py-1 bg-pink-700/30 rounded ml-2" onclick="openKeysPool(${p.id}, '${p.name.replace(/'/g, "&#39;")}')">Keys Pool</button>
                     </td>
                 </tr>
             `).join('');
@@ -157,7 +156,7 @@
                 <div class="space-y-3">
                     <div class="flex gap-2">
                         <input id="new-duration-name" placeholder="Duration (e.g., d:1)" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
-                        <input id="new-duration-price" placeholder="Price" type="number" min="0.01" step="0.01" class="w-40 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                        <input id="new-duration-price" placeholder="User Price" type="number" min="0.01" step="0.01" class="w-40 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
                         <button class="glowing-button px-4 py-2 rounded" onclick="addDuration(${productId})">Add</button>
                     </div>
                     <div class="overflow-x-auto">
@@ -166,7 +165,7 @@
                                 <tr class="text-xs uppercase tracking-wider text-gray-500 text-high-contrast border-b border-primary/50">
                                     <th class="py-2 text-left">ID</th>
                                     <th class="py-2 text-left">Duration</th>
-                                    <th class="py-2 text-left">Price</th>
+                                    <th class="py-2 text-left">User Price</th>
                                     <th class="py-2 text-right">Actions</th>
                                 </tr>
                             </thead>
@@ -1824,42 +1823,10 @@
 
                 <section id="content-owner-keys" class="dashboard-content-section hidden">
                     <h2 class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-primary/50 pb-2">
-                        Owner Keys & Pricing</h2>
+                        Product Management</h2>
 
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div id="owner-product-mgmt" class="lg:col-span-2"></div>
-                        <div class="widget-card rounded-xl p-6">
-                            <h3 class="text-xl font-semibold text-primary mb-4 flex items-center">
-                                <svg data-lucide="plus-circle" class="w-5 h-5 mr-2"></svg>
-                                Bulk Add Keys to Pool
-                            </h3>
-                            <p class="text-gray-400 text-sm mb-4">Paste multiple keys (one per line). Allowed: A-Z a-z 0-9 . _ - (6-64 chars)</p>
-                            <div class="space-y-3">
-                                <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Product/Bucket (e.g., ztrax, lethal)</label>
-                                <input id="owner-keys-bucket" type="text" placeholder="ztrax" required
-                                       class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
-                                <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Keys</label>
-                                <textarea id="owner-keys-text" rows="8" placeholder="KEY_1\nKEY_2\nKEY_3"
-                                          class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg"></textarea>
-                                <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Default Time (optional)</label>
-                                <input id="owner-keys-duration" type="text" placeholder="h:10 or d:3"
-                                       class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
-                                <button onclick="ownerBulkAddKeys()" class="glowing-button w-full text-sm px-4 py-3 rounded-lg mt-2">
-                                    <span class="text-high-contrast">ADD KEYS TO POOL</span>
-                                </button>
-                            </div>
-                        </div>
-
-                        <div class="widget-card rounded-xl p-6">
-                            <h3 class="text-xl font-semibold text-primary mb-4 flex items-center">
-                                <svg data-lucide="tags" class="w-5 h-5 mr-2"></svg>
-                                Pricing Configuration (Per Product)
-                            </h3>
-                            <div id="pricing-editor" class="space-y-3"></div>
-                            <button onclick="ownerSavePricing()" class="glowing-button w-full text-sm px-4 py-3 rounded-lg mt-3">
-                                <span class="text-high-contrast">SAVE PRICING</span>
-                            </button>
-                        </div>
                     </div>
                 </section>
 
