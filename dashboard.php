@@ -118,6 +118,44 @@ function ensureDashboardCoreTables($conn) {
         created_by_id VARCHAR(36) NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // products (owner-managed)
+    $conn->query("CREATE TABLE IF NOT EXISTS products (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        name VARCHAR(64) NOT NULL,
+        status ENUM('active','inactive') NOT NULL DEFAULT 'active',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_products_name (name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // durations per product
+    $conn->query("CREATE TABLE IF NOT EXISTS durations (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        product_id INT UNSIGNED NOT NULL,
+        duration_name VARCHAR(32) NOT NULL,
+        price DECIMAL(10,2) NOT NULL,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_product_duration (product_id, duration_name),
+        KEY idx_durations_product (product_id),
+        CONSTRAINT fk_durations_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // keys pool per product
+    $conn->query("CREATE TABLE IF NOT EXISTS keys_pool (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        product_id INT UNSIGNED NOT NULL,
+        key_value VARCHAR(64) NOT NULL,
+        default_duration VARCHAR(16) NULL,
+        is_used TINYINT(1) NOT NULL DEFAULT 0,
+        used_at DATETIME NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_keys_pool_value (key_value),
+        KEY idx_keys_pool_product (product_id),
+        KEY idx_keys_pool_used (is_used),
+        CONSTRAINT fk_keys_pool_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 }
 
 /**
@@ -271,6 +309,40 @@ try {
 
         case 'get_catalog':
             getCatalog($role);
+            break;
+
+        // Product & Pricing management
+        case 'owner_list_products':
+            ownerListProducts($user_id, $role);
+            break;
+        case 'owner_create_product':
+            ownerCreateProduct($user_id, $role, trim($input['name'] ?? ''));
+            break;
+        case 'owner_update_product':
+            ownerUpdateProduct($user_id, $role, (int)($input['id'] ?? 0), trim($input['name'] ?? ''), trim($input['status'] ?? 'active'));
+            break;
+        case 'owner_delete_product':
+            ownerDeleteProduct($user_id, $role, (int)($input['id'] ?? 0));
+            break;
+        case 'owner_list_durations':
+            ownerListDurations($user_id, $role, (int)($input['product_id'] ?? 0));
+            break;
+        case 'owner_upsert_duration':
+            ownerUpsertDuration($user_id, $role, (int)($input['product_id'] ?? 0), trim($input['duration_name'] ?? ''), (float)($input['price'] ?? 0));
+            break;
+        case 'owner_delete_duration':
+            ownerDeleteDuration($user_id, $role, (int)($input['id'] ?? 0));
+            break;
+        case 'owner_bulk_add_keys_pool':
+            ownerBulkAddKeysPool($user_id, $role, (int)($input['product_id'] ?? 0), $input['keys'] ?? [], trim($input['default_duration'] ?? ''));
+            break;
+
+        // User-facing product/duration catalog
+        case 'list_products':
+            listProducts($role);
+            break;
+        case 'list_durations':
+            listDurations($role, (int)($input['product_id'] ?? 0));
             break;
 
         // Token-based API (for bots/external integrations)
@@ -587,6 +659,7 @@ function createLicense($user_id, $role, $input) {
     // Determine unit price from pricing for provided bucket/duration
     $bucket = isset($input['bucket']) && preg_match('/^[A-Za-z0-9._\-]{1,64}$/', (string)$input['bucket']) ? (string)$input['bucket'] : null;
     $durationId = (string)($input['duration_id'] ?? '');
+    $productId = isset($input['product_id']) ? (int)$input['product_id'] : 0;
     if ($durationId === '') {
         http_response_code(400);
         echo json_encode(['success' => false, 'message' => 'Missing duration_id.']);
@@ -594,6 +667,15 @@ function createLicense($user_id, $role, $input) {
     }
 
     $unitPrice = 0.0;
+    // Prefer new product/duration tables if product_id provided
+    if ($productId > 0) {
+        $ps = $conn->prepare("SELECT price FROM durations WHERE product_id = ? AND duration_name = ? LIMIT 1");
+        $ps->bind_param("is", $productId, $durationId);
+        $ps->execute();
+        $row = $ps->get_result()->fetch_assoc();
+        $ps->close();
+        if ($row) { $unitPrice = (float)$row['price']; }
+    }
     if ($bucket !== null) {
         $ps = $conn->prepare("SELECT price FROM pricing WHERE bucket = ? AND duration_id = ? LIMIT 1");
         $ps->bind_param("ss", $bucket, $durationId);
@@ -634,6 +716,7 @@ function createLicense($user_id, $role, $input) {
     
     $max_devices = 1; // fixed
     $game_package = $input['package_id'];
+    $productId = isset($input['product_id']) ? (int)$input['product_id'] : 0;
     $expires = NULL; // start on first use
     $durationInput = $durationId;
     $keys = [];
@@ -648,16 +731,49 @@ function createLicense($user_id, $role, $input) {
         return;
     }
     for ($i = 0; $i < $quantity; $i++) {
-        $claimed = claimPreAddedKey($conn);
-        if (!$claimed) {
-            $conn->rollback();
-            http_response_code(409);
-            echo json_encode(['success' => false, 'message' => 'Insufficient pre-added keys available. Try fewer quantity or contact owner.']);
-            $conn->close();
-            return;
+        // Prefer keys_pool when product is provided; fallback to system_keys
+        $key_string = null;
+        if ($productId > 0) {
+            // lock next unused key for product
+            $sel = $conn->prepare("SELECT id, key_value, default_duration FROM keys_pool WHERE product_id = ? AND is_used = 0 ORDER BY id ASC LIMIT 1 FOR UPDATE");
+            $sel->bind_param("i", $productId);
+            $sel->execute();
+            $r = $sel->get_result()->fetch_assoc();
+            $sel->close();
+            if (!$r) {
+                $conn->rollback();
+                http_response_code(409);
+                echo json_encode(['success'=>false,'message'=>'No unused keys in pool for selected product.']);
+                $conn->close();
+                return;
+            }
+            $kpId = (int)$r['id'];
+            $key_string = $r['key_value'];
+            $pooledDur = $r['default_duration'];
+            // mark used
+            $upd = $conn->prepare("UPDATE keys_pool SET is_used = 1, used_at = NOW() WHERE id = ? AND is_used = 0");
+            $upd->bind_param("i", $kpId);
+            $upd->execute();
+            if ($upd->affected_rows !== 1) {
+                $conn->rollback();
+                http_response_code(409);
+                echo json_encode(['success'=>false,'message'=>'Key reservation race condition. Try again.']);
+                $conn->close();
+                return;
+            }
+            $duration = $pooledDur ?: $durationInput;
+        } else {
+            $claimed = claimPreAddedKey($conn);
+            if (!$claimed) {
+                $conn->rollback();
+                http_response_code(409);
+                echo json_encode(['success' => false, 'message' => 'Insufficient pre-added keys available. Try fewer quantity or contact owner.']);
+                $conn->close();
+                return;
+            }
+            $key_string = $claimed['key_string'];
+            $duration = $claimed['duration'] ?: $durationInput;
         }
-        $key_string = $claimed['key_string'];
-        $duration = $claimed['duration'] ?: $durationInput;
         if (!$ins->bind_param("sssiss", $key_string, $game_package, $duration, $max_devices, $user_id, $expires) || !$ins->execute()) {
             $conn->rollback();
             http_response_code(500);
@@ -1467,6 +1583,133 @@ function ownerUpdatePricing($user_id, $role, $pricing) {
     $conn->close();
 }
 
+/** New: Owner Product Management **/
+function ownerListProducts($user_id, $role) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    $conn = connectDB();
+    $res = $conn->query("SELECT id, name, status, created_at FROM products ORDER BY name");
+    $rows = [];
+    if ($res) { while ($r = $res->fetch_assoc()) { $rows[] = $r; } }
+    echo json_encode(['success'=>true, 'data'=>$rows]);
+    $conn->close();
+}
+
+function ownerCreateProduct($user_id, $role, $name) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($name === '' || !preg_match('/^[A-Za-z0-9._\-]{1,64}$/', $name)) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid product name.']); return; }
+    $conn = connectDB();
+    $stmt = $conn->prepare("INSERT INTO products (name) VALUES (?)");
+    $stmt->bind_param("s", $name);
+    if ($stmt->execute()) { echo json_encode(['success'=>true, 'data'=>['id'=>$conn->insert_id]]); } else { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Create failed.']); }
+    $conn->close();
+}
+
+function ownerUpdateProduct($user_id, $role, $id, $name, $status) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($id <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid product id.']); return; }
+    if ($name !== '' && !preg_match('/^[A-Za-z0-9._\-]{1,64}$/', $name)) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid product name.']); return; }
+    if ($status !== '' && !in_array($status, ['active','inactive'], true)) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid status.']); return; }
+    $conn = connectDB();
+    if ($name !== '' && $status !== '') {
+        $stmt = $conn->prepare("UPDATE products SET name = ?, status = ? WHERE id = ?");
+        $stmt->bind_param("ssi", $name, $status, $id);
+    } elseif ($name !== '') {
+        $stmt = $conn->prepare("UPDATE products SET name = ? WHERE id = ?");
+        $stmt->bind_param("si", $name, $id);
+    } else {
+        $stmt = $conn->prepare("UPDATE products SET status = ? WHERE id = ?");
+        $stmt->bind_param("si", $status, $id);
+    }
+    if ($stmt->execute() && $stmt->affected_rows >= 0) { echo json_encode(['success'=>true]); } else { http_response_code(404); echo json_encode(['success'=>false,'message'=>'Update failed.']); }
+    $conn->close();
+}
+
+function ownerDeleteProduct($user_id, $role, $id) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($id <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid product id.']); return; }
+    $conn = connectDB();
+    $stmt = $conn->prepare("DELETE FROM products WHERE id = ?");
+    $stmt->bind_param("i", $id);
+    if ($stmt->execute() && $stmt->affected_rows > 0) { echo json_encode(['success'=>true]); } else { http_response_code(404); echo json_encode(['success'=>false,'message'=>'Delete failed.']); }
+    $conn->close();
+}
+
+function ownerListDurations($user_id, $role, $product_id) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($product_id <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid product id.']); return; }
+    $conn = connectDB();
+    $stmt = $conn->prepare("SELECT id, duration_name, price FROM durations WHERE product_id = ? ORDER BY id");
+    $stmt->bind_param("i", $product_id);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $rows = [];
+    while ($r = $res->fetch_assoc()) { $rows[] = $r; }
+    echo json_encode(['success'=>true, 'data'=>$rows]);
+    $conn->close();
+}
+
+function ownerUpsertDuration($user_id, $role, $product_id, $duration_name, $price) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($product_id <= 0 || $duration_name === '' || $price <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid payload.']); return; }
+    $conn = connectDB();
+    $stmt = $conn->prepare("INSERT INTO durations (product_id, duration_name, price) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE price = VALUES(price)");
+    $stmt->bind_param("isd", $product_id, $duration_name, $price);
+    if ($stmt->execute()) { echo json_encode(['success'=>true]); } else { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Upsert failed.']); }
+    $conn->close();
+}
+
+function ownerDeleteDuration($user_id, $role, $id) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($id <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid id.']); return; }
+    $conn = connectDB();
+    $stmt = $conn->prepare("DELETE FROM durations WHERE id = ?");
+    $stmt->bind_param("i", $id);
+    if ($stmt->execute() && $stmt->affected_rows > 0) { echo json_encode(['success'=>true]); } else { http_response_code(404); echo json_encode(['success'=>false,'message'=>'Delete failed.']); }
+    $conn->close();
+}
+
+function ownerBulkAddKeysPool($user_id, $role, $product_id, $keys, $default_duration) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($product_id <= 0 || !is_array($keys) || count($keys) === 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid payload.']); return; }
+    $conn = connectDB();
+    $stmt = $conn->prepare("INSERT INTO keys_pool (product_id, key_value, default_duration, is_used) VALUES (?, ?, ?, 0) ON DUPLICATE KEY UPDATE default_duration=VALUES(default_duration)");
+    if (!$stmt) { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Preparation failed.']); $conn->close(); return; }
+    $added=0; $skipped=0;
+    foreach ($keys as $k) {
+        $kv = trim($k);
+        if ($kv === '' || !preg_match('/^[A-Za-z0-9._\-]{6,64}$/', $kv)) { $skipped++; continue; }
+        $dur = ($default_duration && preg_match('/^(opt\d+|h:\\d{1,5}|d:\\d{1,5})$/', $default_duration)) ? $default_duration : NULL;
+        $stmt->bind_param("iss", $product_id, $kv, $dur);
+        if ($stmt->execute()) { $added++; } else { $skipped++; }
+    }
+    echo json_encode(['success'=>true, 'data'=>['added'=>$added,'skipped'=>$skipped]]);
+    $conn->close();
+}
+
+/** New: User-facing listing **/
+function listProducts($role) {
+    if (!checkRole($role, 'user')) { http_response_code(403); echo json_encode(['success'=>false,'message':'Authorization required.']); return; }
+    $conn = connectDB();
+    $res = $conn->query("SELECT id, name FROM products WHERE status='active' ORDER BY name");
+    $rows = [];
+    if ($res) { while ($r = $res->fetch_assoc()) { $rows[] = $r; } }
+    echo json_encode(['success'=>true, 'data'=>$rows]);
+    $conn->close();
+}
+
+function listDurations($role, $product_id) {
+    if (!checkRole($role, 'user')) { http_response_code(403); echo json_encode(['success'=>false,'message':'Authorization required.']); return; }
+    if ($product_id <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message':'Invalid product id.']); return; }
+    $conn = connectDB();
+    $stmt = $conn->prepare("SELECT id, duration_name, price FROM durations WHERE product_id = ? ORDER BY id");
+    $stmt->bind_param("i", $product_id);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $rows = [];
+    while ($r = $res->fetch_assoc()) { $rows[] = $r; }
+    echo json_encode(['success'=>true, 'data'=>$rows]);
+    $conn->close();
+}
 /**
  * Owner: Generate API key with limit/amount for external automation.
  */
