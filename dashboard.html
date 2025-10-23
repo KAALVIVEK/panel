@@ -29,6 +29,175 @@
             if (!prices) return;
             PRICING = prices;
         }
+
+        // --- Owner Product Management (Products, Durations, Keys Pool) ---
+        async function ownerApi(action, payload = {}) {
+            return await fetchAPI(action, payload);
+        }
+
+        async function renderOwnerProductSection() {
+            const container = document.getElementById('owner-product-mgmt');
+            if (!container || !window.checkRole('owner')) return;
+            const [products, _] = await Promise.all([
+                ownerApi('owner_list_products')
+            ]);
+            const rows = (products || []).map(p => `
+                <tr class="text-sm text-high-contrast">
+                    <td class="py-2 text-white">${p.id}</td>
+                    <td class="py-2">
+                        <input value="${p.name}" class="bg-white/10 border border-primary/30 text-white p-1 rounded" onchange="updateProductName(${p.id}, this.value)">
+                    </td>
+                    <td class="py-2">
+                        <select class="bg-white/10 border border-primary/30 text-white p-1 rounded" onchange="updateProductStatus(${p.id}, this.value)">
+                            <option value="active" ${p.status==='active'?'selected':''}>active</option>
+                            <option value="inactive" ${p.status==='inactive'?'selected':''}>inactive</option>
+                        </select>
+                    </td>
+                    <td class="py-2 text-right">
+                        <button class="text-red-400 px-2 py-1 bg-red-700/40 rounded" onclick="deleteProduct(${p.id})">Delete</button>
+                        <button class="text-primary px-2 py-1 bg-primary/20 rounded ml-2" onclick="openDurations(${p.id}, '${p.name.replace(/'/g, "&#39;")}')">Durations</button>
+                        <button class="text-cyber-pink px-2 py-1 bg-pink-700/30 rounded ml-2" onclick="openKeysPool(${p.id}, '${p.name.replace(/'/g, "&#39;")}')">Keys Pool</button>
+                    </td>
+                </tr>
+            `).join('');
+            container.innerHTML = `
+                <div class="widget-card rounded-xl p-6">
+                    <h3 class="text-xl font-semibold text-primary mb-4 flex items-center">
+                        <svg data-lucide="package" class="w-5 h-5 mr-2"></svg>
+                        Product Management
+                    </h3>
+                    <div class="flex gap-2 mb-3">
+                        <input id="new-product-name" placeholder="New product name" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                        <button class="glowing-button px-4 py-2 rounded" onclick="createProduct()">Add</button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-700/50">
+                            <thead>
+                                <tr class="text-xs uppercase tracking-wider text-gray-500 text-high-contrast border-b border-primary/50">
+                                    <th class="py-2 text-left">ID</th>
+                                    <th class="py-2 text-left">Name</th>
+                                    <th class="py-2 text-left">Status</th>
+                                    <th class="py-2 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="owner-products-table" class="divide-y divide-gray-800">${rows || ''}</tbody>
+                        </table>
+                        ${!rows ? '<div class="text-gray-500 text-sm mt-3">No products yet.</div>' : ''}
+                    </div>
+                </div>
+
+                <div id="owner-product-modals"></div>
+            `;
+            if (typeof lucide !== 'undefined' && lucide.createIcons) { lucide.createIcons(); }
+        }
+
+        window.createProduct = async () => {
+            const name = (document.getElementById('new-product-name')?.value || '').trim();
+            if (!name) { showMessage('Enter product name.', 'error'); return; }
+            const ok = await ownerApi('owner_create_product', { name });
+            if (ok) { showMessage('Product created.', 'success'); document.getElementById('new-product-name').value = ''; renderOwnerProductSection(); }
+        };
+        window.updateProductName = async (id, name) => {
+            if (!name) { showMessage('Name cannot be empty.', 'error'); return; }
+            const ok = await ownerApi('owner_update_product', { id, name });
+            if (ok) { showMessage('Product updated.', 'success'); }
+        };
+        window.updateProductStatus = async (id, status) => {
+            const ok = await ownerApi('owner_update_product', { id, status });
+            if (ok) { showMessage('Status updated.', 'success'); }
+        };
+        window.deleteProduct = async (id) => {
+            if (!confirm('Delete this product? Durations and keys pool will also be removed.')) return;
+            const ok = await ownerApi('owner_delete_product', { id });
+            if (ok) { showMessage('Product deleted.', 'success'); renderOwnerProductSection(); }
+        };
+
+        function modalTemplate(title, bodyHtml) {
+            return `
+                <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="closeOwnerModal(event)">
+                    <div class="bg-gray-900 border border-primary/40 rounded-xl max-w-2xl w-full p-4" onclick="event.stopPropagation()">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="text-white text-lg font-semibold text-high-contrast">${title}</div>
+                            <button class="text-gray-400 hover:text-white" onclick="closeOwnerModal()">✕</button>
+                        </div>
+                        <div>${bodyHtml}</div>
+                    </div>
+                </div>
+            `;
+        }
+        window.closeOwnerModal = () => {
+            const mod = document.getElementById('owner-product-modals');
+            if (mod) mod.innerHTML = '';
+        };
+
+        window.openDurations = async (productId, productName) => {
+            const rows = await ownerApi('owner_list_durations', { product_id: productId }) || [];
+            const body = `
+                <div class="space-y-3">
+                    <div class="flex gap-2">
+                        <input id="new-duration-name" placeholder="Duration (e.g., d:1)" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                        <input id="new-duration-price" placeholder="Price" type="number" min="0.01" step="0.01" class="w-40 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                        <button class="glowing-button px-4 py-2 rounded" onclick="addDuration(${productId})">Add</button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-700/50">
+                            <thead>
+                                <tr class="text-xs uppercase tracking-wider text-gray-500 text-high-contrast border-b border-primary/50">
+                                    <th class="py-2 text-left">ID</th>
+                                    <th class="py-2 text-left">Duration</th>
+                                    <th class="py-2 text-left">Price</th>
+                                    <th class="py-2 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="owner-durations-table" class="divide-y divide-gray-800">
+                                ${rows.map(r => `
+                                    <tr class="text-sm text-high-contrast">
+                                        <td class="py-2 text-white">${r.id}</td>
+                                        <td class="py-2">${r.duration_name}</td>
+                                        <td class="py-2">₹${parseFloat(r.price).toFixed(2)}</td>
+                                        <td class="py-2 text-right">
+                                            <button class="text-red-400 px-2 py-1 bg-red-700/40 rounded" onclick="deleteDuration(${r.id}, ${productId})">Delete</button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>`;
+            document.getElementById('owner-product-modals').innerHTML = modalTemplate(`Durations - ${productName}`, body);
+        };
+        window.addDuration = async (productId) => {
+            const name = (document.getElementById('new-duration-name')?.value || '').trim();
+            const price = parseFloat(document.getElementById('new-duration-price')?.value || '0');
+            if (!name || !(price > 0)) { showMessage('Enter valid duration and price.', 'error'); return; }
+            const ok = await ownerApi('owner_upsert_duration', { product_id: productId, duration_name: name, price });
+            if (ok) { showMessage('Duration upserted.', 'success'); openDurations(productId, ''); }
+        };
+        window.deleteDuration = async (id, productId) => {
+            const ok = await ownerApi('owner_delete_duration', { id });
+            if (ok) { showMessage('Duration deleted.', 'success'); openDurations(productId, ''); }
+        };
+
+        window.openKeysPool = async (productId, productName) => {
+            const body = `
+                <div class="space-y-3">
+                    <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Add Keys (one per line)</label>
+                    <textarea id="keys-pool-input" rows="8" class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg"></textarea>
+                    <div class="flex gap-2">
+                        <input id="keys-pool-default-duration" placeholder="Default duration (optional)" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                        <button class="glowing-button px-4 py-2 rounded" onclick="addKeysPool(${productId})">Add</button>
+                    </div>
+                </div>`;
+            document.getElementById('owner-product-modals').innerHTML = modalTemplate(`Keys Pool - ${productName}`, body);
+        };
+        window.addKeysPool = async (productId) => {
+            const raw = document.getElementById('keys-pool-input')?.value || '';
+            const keys = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            const default_duration = (document.getElementById('keys-pool-default-duration')?.value || '').trim();
+            if (keys.length === 0) { showMessage('No keys provided.', 'error'); return; }
+            const ok = await ownerApi('owner_bulk_add_keys_pool', { product_id: productId, keys, default_duration });
+            if (ok) { showMessage('Keys added to pool.', 'success'); closeOwnerModal(); }
+        };
         function setCurrentBucket(bucket) {
             currentBucket = bucket || '_default_';
             rebuildLicenseOptions();
@@ -857,7 +1026,7 @@
             if (activeContainer) activeContainer.classList.remove('hidden');
             if (window.dashboardView === 'manage-users') { displayManagedUsers(); }
             if (window.dashboardView === 'system-keys') { displaySystemKeys(); }
-            if (window.dashboardView === 'owner-keys') { renderPricingEditor(); }
+            if (window.dashboardView === 'owner-keys') { renderPricingEditor(); renderOwnerProductSection(); }
             if (window.dashboardView === 'licenses') { displayRegisteredLicenses(); }
             if (window.dashboardView === 'license-creator') { window.updateLicenseTotal(); }
             if (window.dashboardView === 'create-referral') { displayReferralCodes(); }
@@ -1458,6 +1627,7 @@
                         Owner Keys & Pricing</h2>
 
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div id="owner-product-mgmt" class="lg:col-span-2"></div>
                         <div class="widget-card rounded-xl p-6">
                             <h3 class="text-xl font-semibold text-primary mb-4 flex items-center">
                                 <svg data-lucide="plus-circle" class="w-5 h-5 mr-2"></svg>
