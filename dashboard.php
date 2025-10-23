@@ -546,17 +546,17 @@ function ensurePaymentsTables($conn) {
     $conn->query("CREATE TABLE IF NOT EXISTS payments (
         id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         order_id VARCHAR(64) UNIQUE,
+        txn_id VARCHAR(64) NULL,
         user_id VARCHAR(36) NOT NULL,
         amount DECIMAL(10,2) NOT NULL,
         status VARCHAR(16) NOT NULL DEFAULT 'INIT',
-        gateway VARCHAR(16) NOT NULL DEFAULT 'paytm',
-        payload TEXT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    )");
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 }
 
 function createPaytmOrder($user_id, $role, $amount) {
+    require_once __DIR__ . '/api/config.php';
+    require_once __DIR__ . '/api/paytm_checksum.php';
     if (!checkRole($role, 'user')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Authorization required.']); return; }
     if ($amount <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid amount.']); return; }
     $conn = connectDB();
@@ -565,27 +565,39 @@ function createPaytmOrder($user_id, $role, $amount) {
     $stmt = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'INIT')");
     $stmt->bind_param("ssd", $order_id, $user_id, $amount);
     if (!$stmt->execute()) { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Failed to create order.']); $conn->close(); return; }
-    // Return fields needed for initiating Paytm transaction (replace with your credentials)
-    $mid = getenv('PAYTM_MID') ?: 'YOUR_MID_HERE';
-    $mkey = getenv('PAYTM_MERCHANT_KEY') ?: 'YOUR_MERCHANT_KEY';
-    $website = getenv('PAYTM_WEBSITE') ?: 'DEFAULT';
-    $callbackUrl = (getenv('PAYTM_CALLBACK_URL') ?: ( (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS']==='on'?'https':'http') . '://' . $_SERVER['HTTP_HOST'] . dirname($_SERVER['REQUEST_URI']) . '/dashboard.php'));
+    // Prepare initiateTransaction payload
     $txnAmount = number_format($amount, 2, '.', '');
-    $params = [
-        'mid' => $mid,
+    $body = [
+        'requestType' => 'Payment',
+        'mid' => PAYTM_MID,
+        'websiteName' => PAYTM_WEBSITE,
         'orderId' => $order_id,
-        'amount' => $txnAmount,
-        'callbackUrl' => $callbackUrl,
-        'custId' => $user_id,
+        'callbackUrl' => PAYTM_CALLBACK_URL,
+        'txnAmount' => [ 'value' => $txnAmount, 'currency' => 'INR' ],
+        'userInfo' => [ 'custId' => $user_id ]
     ];
-    // Note: Generate signature client-side per latest Paytm JS checkout or server-side if needed
+    $checksum = PaytmChecksum::generateSignature(json_encode($body, JSON_UNESCAPED_SLASHES), PAYTM_MERCHANT_KEY);
+    $payload = json_encode(['body'=>$body, 'head'=>['signature'=>$checksum]], JSON_UNESCAPED_SLASHES);
+    $host = PAYTM_ENVIRONMENT === 'PROD' ? 'https://securegw.paytm.in' : 'https://securegw-stage.paytm.in';
+    $url = $host . '/theia/api/v1/initiateTransaction?mid=' . PAYTM_MID . '&orderId=' . $order_id;
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    $resp = curl_exec($ch);
+    $err = curl_error($ch);
+    curl_close($ch);
+    if ($err || !$resp) { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Paytm initiateTransaction failed.']); $conn->close(); return; }
+    $res = json_decode($resp, true);
+    if (!isset($res['body']['txnToken'])) { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Paytm did not return txnToken.']); $conn->close(); return; }
     echo json_encode(['success'=>true, 'data'=>[
         'order_id'=>$order_id,
-        'mid'=>$mid,
+        'mid'=>PAYTM_MID,
+        'txnToken'=>$res['body']['txnToken'],
         'amount'=>$txnAmount,
-        'callback_url'=>$callbackUrl,
-        'website'=>$website,
-        'params'=>$params
+        'callback_url'=>PAYTM_CALLBACK_URL,
+        'env'=>PAYTM_ENVIRONMENT
     ]]);
     $conn->close();
 }

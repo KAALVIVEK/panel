@@ -368,10 +368,33 @@
             const amt = parseFloat(document.getElementById('topup-amount')?.value || '0');
             const msg = document.getElementById('topup-order-msg');
             if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
-            const data = await fetchAPI('create_paytm_order', { amount: amt });
-            if (data && data.order_id) {
-                msg.textContent = `Order created: ${data.order_id}. MID: ${data.mid}. Use your Paytm JS/SDK to initiate checkout.`;
-            }
+            const d = await fetchAPI('create_paytm_order', { amount: amt });
+            if (!d || !d.txnToken) { showMessage('Failed to initiate Paytm order.', 'error'); return; }
+            msg.textContent = `Order created: ${d.order_id}. Opening Paytm checkout...`;
+            // Load CheckoutJS
+            const scriptUrl = d.env === 'PROD' ? 'https://securegw.paytm.in/merchantpgpui/checkoutjs/merchants/' : 'https://securegw-stage.paytm.in/merchantpgpui/checkoutjs/merchants/';
+            await new Promise((resolve, reject) => {
+                const s = document.createElement('script'); s.src = scriptUrl + d.mid + '.js'; s.onload = resolve; s.onerror = reject; document.body.appendChild(s);
+            });
+            const config = {
+                root: '',
+                flow: 'DEFAULT',
+                data: {
+                    orderId: d.order_id,
+                    token: d.txnToken,
+                    tokenType: 'TXN_TOKEN',
+                    amount: d.amount
+                },
+                merchant: { mid: d.mid },
+                handler: {
+                    notifyMerchant: function(eventName, data){ console.log('Paytm Event', eventName, data); }
+                }
+            };
+            if (window.Paytm && window.Paytm.CheckoutJS) {
+                window.Paytm.CheckoutJS.init(config).then(function(){
+                    window.Paytm.CheckoutJS.invoke();
+                }).catch(function(){ showMessage('Paytm checkout init failed.', 'error'); });
+            } else { showMessage('Paytm SDK not loaded.', 'error'); }
         };
 
         window.checkRole = (requiredRole) => {
