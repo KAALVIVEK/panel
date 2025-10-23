@@ -244,11 +244,20 @@
         function rebuildLicenseOptions() {
             LICENSE_OPTIONS.length = 0;
             const entries = PRICING[currentBucket] || {};
+            const pickByRole = (val) => {
+                if (val && typeof val === 'object') {
+                    if (window.userRole === 'reseller') return parseFloat(val.reseller || val.user || val.admin || 0);
+                    if (window.userRole === 'admin' || window.userRole === 'owner') return parseFloat(val.admin || val.reseller || val.user || 0);
+                    return parseFloat(val.user || val.reseller || val.admin || 0);
+                }
+                return parseFloat(val || '0');
+            };
             Object.keys(entries).forEach(id => {
                 // Present id as readable label (e.g., opt1 or custom like h:10)
                 let label = id.startsWith('h:') ? `${id.slice(2)} Hour` : id.startsWith('d:') ? `${id.slice(2)} Day` : id.toUpperCase();
                 if (label.endsWith(' Day') && parseInt(id.slice(2),10) > 1) label += 's';
-                LICENSE_OPTIONS.push({ id, duration: label, days: null, price: parseFloat(entries[id]) });
+                const price = pickByRole(entries[id]);
+                LICENSE_OPTIONS.push({ id, duration: label, days: null, price });
             });
         }
 
@@ -1216,23 +1225,29 @@
                 }
                 return id.toUpperCase();
             };
+            // Start from DB durations and then apply role-specific PRICING override if present
+            const gameSel = document.getElementById('license-game');
+            const productName = gameSel && gameSel.selectedOptions[0] ? (gameSel.selectedOptions[0].dataset.name || '') : '';
+            const rolePick = (v) => {
+                if (v && typeof v === 'object') {
+                    if (window.userRole === 'reseller') return parseFloat(v.reseller || v.user || v.admin || 0);
+                    if (window.userRole === 'admin' || window.userRole === 'owner') return parseFloat(v.admin || v.reseller || v.user || 0);
+                    return parseFloat(v.user || v.reseller || v.admin || 0);
+                }
+                return parseFloat(v || '0');
+            };
             list.forEach(r => {
                 const id = r.duration_name || r.id || '';
-                const price = parseFloat(r.price || 0);
-                if (!id || !(price > 0)) return;
+                if (!id) return;
+                let price = parseFloat(r.price || 0);
+                const override = productName && PRICING[productName] ? PRICING[productName][id] : undefined;
+                if (typeof override !== 'undefined') {
+                    const p = rolePick(override);
+                    if (p > 0) price = p;
+                }
+                if (!(price > 0)) return;
                 LICENSE_OPTIONS.push({ id, duration: toLabel(id), days: null, price });
             });
-            // Fallback: if no product durations yet, derive from pricing bucket named like product
-            if (LICENSE_OPTIONS.length === 0) {
-                const gameSel = document.getElementById('license-game');
-                const productName = gameSel && gameSel.selectedOptions[0] ? (gameSel.selectedOptions[0].dataset.name || '') : '';
-                const entries = PRICING[productName] || {};
-                Object.keys(entries).forEach(id => {
-                    let label = id.startsWith('h:') ? `${id.slice(2)} Hour` : id.startsWith('d:') ? `${id.slice(2)} Day` : id.toUpperCase();
-                    if (label.endsWith(' Day') && parseInt(id.slice(2),10) > 1) label += 's';
-                    LICENSE_OPTIONS.push({ id, duration: label, days: null, price: parseFloat(entries[id]) });
-                });
-            }
             // Render into the select
             const optionsHtml = LICENSE_OPTIONS.map((option, index) => `
                 <option value="${option.id}" ${index === 0 ? 'selected' : ''}>
