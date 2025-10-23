@@ -762,8 +762,11 @@
             const pricing = await fetchAPI('get_pricing', { full: true });
             if (!pricing) return;
             // Render per bucket with 2-tier rows: User and Reseller/Admin/Owner (same)
-            wrap.innerHTML = Object.keys(pricing).map(bucket => {
-                const rows = Object.entries(pricing[bucket]).map(([dur, tiers]) => {
+            const buckets = Object.keys(pricing);
+            if (buckets.length === 0) { buckets.push('_default_'); }
+            wrap.innerHTML = buckets.map(bucket => {
+                const data = pricing[bucket] || {};
+                const rows = Object.entries(data).map(([dur, tiers]) => {
                     const user = (tiers && typeof tiers === 'object') ? (tiers.user ?? 0) : (parseFloat(tiers) || 0);
                     const rao = (tiers && typeof tiers === 'object') ? (tiers.reseller ?? tiers.admin ?? tiers.user ?? 0) : (parseFloat(tiers) || 0);
                     return `
@@ -809,6 +812,17 @@
                 } else if (tier === 'rao') {
                     pricing[b][id]['reseller'] = val;
                     pricing[b][id]['admin'] = val;
+                }
+            });
+            // Remove empty buckets or durations to avoid invalid payload
+            Object.keys(pricing).forEach(b => {
+                Object.keys(pricing[b]).forEach(id => {
+                    if (!('user' in pricing[b][id]) && !('reseller' in pricing[b][id]) && !('admin' in pricing[b][id])) {
+                        delete pricing[b][id];
+                    }
+                });
+                if (Object.keys(pricing[b]).length === 0) {
+                    delete pricing[b];
                 }
             });
             const ok = await fetchAPI('owner_update_pricing', { pricing });
