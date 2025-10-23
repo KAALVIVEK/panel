@@ -682,14 +682,41 @@ function createLicense($user_id, $role, $input) {
     }
 
     $unitPrice = 0.0;
-    // Prefer new product/duration tables if product_id provided
+    // Prefer role-tiered PRICING using product name when product_id is provided; fallback to durations table
     if ($productId > 0) {
-        $ps = $conn->prepare("SELECT price FROM durations WHERE product_id = ? AND duration_name = ? LIMIT 1");
-        $ps->bind_param("is", $productId, $durationId);
-        $ps->execute();
-        $row = $ps->get_result()->fetch_assoc();
-        $ps->close();
-        if ($row) { $unitPrice = (float)$row['price']; }
+        // Load product name to use as bucket key
+        $pn = $conn->prepare("SELECT name FROM products WHERE id = ? LIMIT 1");
+        if ($pn) {
+            $pn->bind_param("i", $productId);
+            $pn->execute();
+            $pRow = $pn->get_result()->fetch_assoc();
+            $pn->close();
+            $productName = $pRow['name'] ?? null;
+            if ($productName) {
+                $tierCol = ($role === 'reseller') ? 'price_reseller' : (($role === 'admin' || $role === 'owner') ? 'price_admin' : 'price_user');
+                $ps = $conn->prepare("SELECT price, $tierCol AS tier_price FROM pricing WHERE bucket = ? AND duration_id = ? LIMIT 1");
+                if ($ps) {
+                    $ps->bind_param("ss", $productName, $durationId);
+                    $ps->execute();
+                    $row = $ps->get_result()->fetch_assoc();
+                    $ps->close();
+                    if ($row) {
+                        $unitPrice = isset($row['tier_price']) && (float)$row['tier_price'] > 0 ? (float)$row['tier_price'] : (float)($row['price'] ?? 0);
+                    }
+                }
+            }
+        }
+        // Fallback to durations table price if tiered pricing not found
+        if ($unitPrice <= 0) {
+            $ps = $conn->prepare("SELECT price FROM durations WHERE product_id = ? AND duration_name = ? LIMIT 1");
+            if ($ps) {
+                $ps->bind_param("is", $productId, $durationId);
+                $ps->execute();
+                $row = $ps->get_result()->fetch_assoc();
+                $ps->close();
+                if ($row) { $unitPrice = (float)$row['price']; }
+            }
+        }
     }
     if ($bucket !== null) {
         // Choose role-based tier when available
@@ -706,12 +733,14 @@ function createLicense($user_id, $role, $input) {
     if ($unitPrice <= 0) {
         $tierCol = ($role === 'reseller') ? 'price_reseller' : (($role === 'admin' || $role === 'owner') ? 'price_admin' : 'price_user');
         $ps = $conn->prepare("SELECT price, $tierCol AS tier_price FROM pricing WHERE bucket IS NULL AND duration_id = ? LIMIT 1");
-        $ps->bind_param("s", $durationId);
-        $ps->execute();
-        $row = $ps->get_result()->fetch_assoc();
-        $ps->close();
-        if ($row) {
-            $unitPrice = isset($row['tier_price']) && (float)$row['tier_price'] > 0 ? (float)$row['tier_price'] : (float)($row['price'] ?? 0);
+        if ($ps) {
+            $ps->bind_param("s", $durationId);
+            $ps->execute();
+            $row = $ps->get_result()->fetch_assoc();
+            $ps->close();
+            if ($row) {
+                $unitPrice = isset($row['tier_price']) && (float)$row['tier_price'] > 0 ? (float)$row['tier_price'] : (float)($row['price'] ?? 0);
+            }
         }
     }
     if ($unitPrice <= 0) {
