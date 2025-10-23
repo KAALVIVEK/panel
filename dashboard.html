@@ -202,22 +202,31 @@
 
         window.updateLicenseTotal = () => {
             const durationSelect = document.getElementById('license-duration');
-            const maxDevicesInput = document.getElementById('max-devices');
             const productSel = document.getElementById('license-game');
+            const qtyInput = document.getElementById('license-quantity');
             const bucket = (productSel && productSel.value) ? productSel.value : '_default_';
             setCurrentBucket(bucket);
             renderDurationOptions();
-            let selectedDuration = durationSelect.value ? LICENSE_OPTIONS.find(opt => opt.id === durationSelect.value) : null;
-            const maxDevices = parseInt(maxDevicesInput.value) || 1;
+            const selectedDuration = durationSelect.value ? LICENSE_OPTIONS.find(opt => opt.id === durationSelect.value) : null;
+            const quantity = Math.min(10, Math.max(1, parseInt(qtyInput?.value || '1', 10) || 1));
+            if (qtyInput && qtyInput.value !== String(quantity)) qtyInput.value = String(quantity);
             let totalCost = 0;
             if (selectedDuration) {
-                totalCost = selectedDuration.price * maxDevices;
+                totalCost = selectedDuration.price * quantity;
             }
-            document.getElementById('licenseTotalCost').textContent = totalCost.toFixed(2);
-            document.getElementById('licenseTotalCost').classList.toggle('text-red-400', totalCost > window.userBalance);
-            document.getElementById('licenseTotalCost').classList.toggle('text-green-400', totalCost <= window.userBalance);
-            document.getElementById('generateLicenseButton').disabled = totalCost === 0 || totalCost > window.userBalance;
-            document.getElementById('generateLicenseButton').classList.toggle('opacity-50', totalCost > window.userBalance);
+            const costEl = document.getElementById('licenseTotalCost');
+            costEl.textContent = totalCost.toFixed(2);
+            // flash animation
+            costEl.classList.remove('cost-flash');
+            void costEl.offsetWidth; // reflow to restart animation
+            costEl.classList.add('cost-flash');
+            const insufficient = totalCost > window.userBalance;
+            costEl.classList.toggle('text-red-400', insufficient);
+            costEl.classList.toggle('text-green-400', !insufficient);
+            document.getElementById('generateLicenseButton').disabled = totalCost === 0 || insufficient;
+            document.getElementById('generateLicenseButton').classList.toggle('opacity-50', insufficient || totalCost === 0);
+            const warn = document.getElementById('insufficientBalanceMsg');
+            if (warn) warn.classList.toggle('hidden', !insufficient);
         };
 
         window.loadInitialData = async () => {
@@ -259,9 +268,10 @@
             const customId = document.getElementById('custom-duration-id').value;
             if (durationId === 'custom' && customId) { durationId = customId; }
             const selectedDuration = LICENSE_OPTIONS.find(opt => opt.id === durationId) || { duration: durationId.startsWith('h:') ? `${durationId.slice(2)} Hours` : durationId.startsWith('d:') ? `${durationId.slice(2)} Days` : 'Custom' };
+            const quantity = Math.min(10, Math.max(1, parseInt(document.getElementById('license-quantity').value || '1', 10)));
             const gameName = GAMES.find(g => g.package === packageId).name;
             showConfirmationDialog('Confirm License Generation',
-                `You are about to generate a **${gameName}** license key for **${selectedDuration.duration}** costing **₹${totalCost.toFixed(2)}**. Deduct balance?`,
+                `You are about to generate **${quantity}** ${gameName} key(s) for **${selectedDuration.duration}** totaling **₹${totalCost.toFixed(2)}**. Deduct balance?`,
                 async (confirmed) => {
                     if (!confirmed) {
                         showMessage('License generation cancelled.', 'error');
@@ -273,13 +283,17 @@
                         duration_id: durationId,
                         days: selectedDuration.days,
                         max_devices: maxDevices,
-                        cost: totalCost
+                        cost: totalCost,
+                        quantity: quantity
                     });
                     if (newKeyData) {
                         window.userBalance = newKeyData.new_balance;
                         window.updateLicenseTotal();
-                        window.copyToClipboard(newKeyData.key_string);
-                        showMessage(`License key generated and copied! New Balance: ₹${window.userBalance.toFixed(2)}.`, 'success');
+                        const keys = Array.isArray(newKeyData.keys) ? newKeyData.keys : (newKeyData.key_string ? [newKeyData.key_string] : []);
+                        if (keys.length) {
+                            window.copyToClipboard(keys.join('\n'));
+                        }
+                        showMessage(`${keys.length || 1} key(s) generated. New Balance: ₹${window.userBalance.toFixed(2)}.`, 'success');
                         displayRegisteredLicenses();
                         window.changeDashboardView('licenses');
                     }
@@ -1022,6 +1036,15 @@
             animation: none;
             box-shadow: none;
         }
+        /* small flash when total updates */
+        .cost-flash {
+            animation: costFlash 200ms ease-in-out;
+        }
+        @keyframes costFlash {
+            0% { transform: scale(1); filter: brightness(1.2); }
+            50% { transform: scale(1.04); filter: brightness(1.6); }
+            100% { transform: scale(1); filter: brightness(1); }
+        }
         .sidebar-link {
             transition: all 0.2s;
             position: relative;
@@ -1601,10 +1624,17 @@
                                     class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
                                     </select>
                             </div>
+                            <div>
+                                <label for="license-quantity"
+                                    class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Quantity</label>
+                                <input id="license-quantity" type="number" value="1" min="1" max="10" required onchange="updateLicenseTotal()"
+                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                                <p id="insufficientBalanceMsg" class="text-xs text-red-400 mt-1 hidden">Insufficient Balance</p>
+                            </div>
                             <input type="hidden" id="custom-duration-id" value="">
 
                             <div class="pt-4 flex justify-between items-center">
-                                <span class="text-white font-medium text-lg">Your Total Balance:</span>
+                                <span class="text-white font-medium text-lg">Your Total:</span>
                                 <span id="licenseTotalCost" class="text-lg font-mono text-green-400">---</span>
                             </div>
 

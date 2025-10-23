@@ -577,15 +577,46 @@ function createLicense($user_id, $role, $input) {
         return;
     }
     
-    $cost = (float)($input['cost'] ?? 0);
-    if ($cost <= 0) {
+    $quantity = isset($input['quantity']) ? (int)$input['quantity'] : 1;
+    if ($quantity < 1) { $quantity = 1; }
+    if ($quantity > 10) { $quantity = 10; }
+
+    $conn = connectDB();
+    ensurePricingTable($conn);
+
+    // Determine unit price from pricing for provided bucket/duration
+    $bucket = isset($input['bucket']) && preg_match('/^[A-Za-z0-9._\-]{1,64}$/', (string)$input['bucket']) ? (string)$input['bucket'] : null;
+    $durationId = (string)($input['duration_id'] ?? '');
+    if ($durationId === '') {
         http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'Invalid license cost.']);
+        echo json_encode(['success' => false, 'message' => 'Missing duration_id.']);
         return;
     }
 
-    $conn = connectDB();
-    
+    $unitPrice = 0.0;
+    if ($bucket !== null) {
+        $ps = $conn->prepare("SELECT price FROM pricing WHERE bucket = ? AND duration_id = ? LIMIT 1");
+        $ps->bind_param("ss", $bucket, $durationId);
+        $ps->execute();
+        $row = $ps->get_result()->fetch_assoc();
+        $ps->close();
+        if ($row) { $unitPrice = (float)$row['price']; }
+    }
+    if ($unitPrice <= 0) {
+        $ps = $conn->prepare("SELECT price FROM pricing WHERE bucket IS NULL AND duration_id = ? LIMIT 1");
+        $ps->bind_param("s", $durationId);
+        $ps->execute();
+        $row = $ps->get_result()->fetch_assoc();
+        $ps->close();
+        if ($row) { $unitPrice = (float)$row['price']; }
+    }
+    if ($unitPrice <= 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Pricing not configured for selected product/duration.']);
+        return;
+    }
+    $totalCost = $unitPrice * $quantity;
+
     $conn->begin_transaction();
     $stmt = $conn->prepare("SELECT balance FROM users WHERE user_id = ? FOR UPDATE");
     $stmt->bind_param("s", $user_id);
@@ -593,7 +624,7 @@ function createLicense($user_id, $role, $input) {
     $userBalance = $stmt->get_result()->fetch_assoc()['balance'] ?? 0;
     $stmt->close();
 
-    if ($userBalance < $cost) {
+    if ($userBalance < $totalCost) {
         $conn->rollback();
         http_response_code(402);
         echo json_encode(['success' => false, 'message' => 'Insufficient balance.']);
@@ -601,43 +632,49 @@ function createLicense($user_id, $role, $input) {
         return;
     }
     
-    // Claim a pre-added key from the pool managed by owner
-    $claimed = claimPreAddedKey($conn);
-    if (!$claimed) {
-        $conn->rollback();
-        http_response_code(409);
-        echo json_encode(['success' => false, 'message' => 'No pre-added keys available. Contact owner.']);
-        $conn->close();
-        return;
-    }
-    $key_string = $claimed['key_string'];
-    // If owner provided a specific duration on the key, use it; else use selected duration
-    $duration = $claimed['duration'] ?: $input['duration_id'];
-    $max_devices = 1; // fixed to 1 device per request
+    $max_devices = 1; // fixed
     $game_package = $input['package_id'];
-    $days = $input['days'] ?? null; 
-    $expires = NULL; // start on first use (activation)
-    
-    $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) 
-            VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
-    $stmt = $conn->prepare($sql);
-    
-    if (!$stmt->bind_param("sssiss", $key_string, $game_package, $duration, $max_devices, $user_id, $expires) || !$stmt->execute()) {
-        $error_message = $conn->error;
+    $expires = NULL; // start on first use
+    $durationInput = $durationId;
+    $keys = [];
+
+    $insertSql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
+    $ins = $conn->prepare($insertSql);
+    if (!$ins) {
         $conn->rollback();
         http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'Key creation failed: ' . $error_message]);
+        echo json_encode(['success' => false, 'message' => 'Preparation failed for license insert.']);
         $conn->close();
         return;
     }
-    
-    $newBalance = $userBalance - $cost;
+    for ($i = 0; $i < $quantity; $i++) {
+        $claimed = claimPreAddedKey($conn);
+        if (!$claimed) {
+            $conn->rollback();
+            http_response_code(409);
+            echo json_encode(['success' => false, 'message' => 'Insufficient pre-added keys available. Try fewer quantity or contact owner.']);
+            $conn->close();
+            return;
+        }
+        $key_string = $claimed['key_string'];
+        $duration = $claimed['duration'] ?: $durationInput;
+        if (!$ins->bind_param("sssiss", $key_string, $game_package, $duration, $max_devices, $user_id, $expires) || !$ins->execute()) {
+            $conn->rollback();
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => 'Key creation failed during batch.']);
+            $conn->close();
+            return;
+        }
+        $keys[] = $key_string;
+    }
+
+    $newBalance = $userBalance - $totalCost;
     $stmt = $conn->prepare("UPDATE users SET balance = ? WHERE user_id = ?");
     $stmt->bind_param("ds", $newBalance, $user_id);
     $stmt->execute();
     
     $conn->commit();
-    echo json_encode(['success' => true, 'data' => ['key_string' => $key_string, 'new_balance' => $newBalance]]);
+    echo json_encode(['success' => true, 'data' => ['keys' => $keys, 'new_balance' => $newBalance]]);
     $conn->close();
 }
 
@@ -1347,9 +1384,9 @@ function ownerBulkAddKeys($user_id, $role, $keys, $name, $bucket = null, $durati
  * Get pricing table (admin/owner).
  */
 function getPricing($role) {
-    if (!checkRole($role, 'admin')) {
+    if (!checkRole($role, 'user')) {
         http_response_code(403);
-        echo json_encode(['success' => false, 'message' => 'Admin authorization required.']);
+        echo json_encode(['success' => false, 'message' => 'Authorization required.']);
         return;
     }
     $conn = connectDB();
