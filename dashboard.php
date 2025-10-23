@@ -173,15 +173,20 @@ function checkRole($currentRole, $requiredRole) {
 // --- 3. INPUT HANDLING ---
 $inputJSON = file_get_contents('php://input');
 $input = json_decode($inputJSON, true);
+if (!is_array($input)) { $input = $_POST ?? []; }
 
-// Check if input is valid
-if (!isset($input['action'])) {
+// Determine action via body first, then query param; fallback for Paytm callbacks
+$action = $input['action'] ?? ($_GET['action'] ?? null);
+if (!$action && (isset($input['ORDERID']) || isset($_REQUEST['ORDERID']))) {
+    $action = 'paytm_webhook';
+}
+
+if (!$action) {
     http_response_code(400);
     echo json_encode(['success' => false, 'message' => 'Invalid API request format.']);
     exit();
 }
 
-$action = $input['action'];
 $user_id = $input['user_id'] ?? null;
 $role = $input['role'] ?? null;
 
