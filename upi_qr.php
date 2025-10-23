@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/paytm_checksum.php';
 header('Content-Type: text/html; charset=UTF-8');
 $amount = isset($_GET['amount']) ? number_format((float)$_GET['amount'], 2, '.', '') : '10.00';
 $orderId = isset($_GET['orderId']) ? preg_replace('/[^A-Za-z0-9_\-]/','', $_GET['orderId']) : ('ORDER_' . time());
@@ -7,7 +8,8 @@ $orderId = isset($_GET['orderId']) ? preg_replace('/[^A-Za-z0-9_\-]/','', $_GET[
 $expiresAt = time() + 300;
 // Create UPI QR via Paytm API (if available to your MID) OR fallback to generic UPI link
 $data = [ 'mid'=>PAYTM_MID, 'orderId'=>$orderId, 'amount'=>$amount, 'businessType'=>'UPI_QR', 'posId'=>'WEB_01' ];
-$payload = json_encode($data);
+$sig = defined('PAYTM_MERCHANT_KEY') ? PaytmChecksum::generateSignature(json_encode($data, JSON_UNESCAPED_SLASHES), PAYTM_MERCHANT_KEY) : '';
+$payload = json_encode(['body'=>$data, 'head'=>['signature'=>$sig]], JSON_UNESCAPED_SLASHES);
 $url = PAYTM_API_BASE . '/paymentservices/qr/create';
 $ch = curl_init($url);
 curl_setopt($ch, CURLOPT_POST, true);
