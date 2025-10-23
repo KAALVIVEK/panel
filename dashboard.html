@@ -409,7 +409,20 @@
                 },
                 merchant: { mid: d.mid },
                 handler: {
-                    notifyMerchant: function(eventName, data){ console.log('Paytm Event', eventName, data); }
+                    notifyMerchant: async function(eventName, data){
+                        console.log('Paytm Event', eventName, data);
+                        if (eventName === 'APP_CLOSED') {
+                            // Pull fresh balance after user closes checkout
+                            const info = await fetchAPI('load_initial_data');
+                            if (info && typeof info.balance !== 'undefined') {
+                                window.userBalance = info.balance;
+                                document.getElementById('currentBalance').textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+                                const sb = document.getElementById('sidebarBalance'); if (sb) sb.textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+                                const lb = document.getElementById('licenseBalanceDisplay'); if (lb) lb.textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+                                showMessage('Payment processed. Balance refreshed.', 'success');
+                            }
+                        }
+                    }
                 }
             };
             if (window.Paytm && window.Paytm.CheckoutJS) {
