@@ -193,12 +193,7 @@ $role = $input['role'] ?? null;
 // --- 4. API ROUTING ---
 try {
     switch ($action) {
-        case 'create_paytm_order':
-            createPaytmOrder($user_id, $role, (float)($input['amount'] ?? 0));
-            break;
-        case 'paytm_webhook':
-            paytmWebhook();
-            break;
+        // Paytm UPI QR flow handled via separate payment.php; legacy API removed
         case 'load_initial_data':
             loadInitialData($user_id);
             break;

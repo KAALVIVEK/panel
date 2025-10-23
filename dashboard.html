@@ -390,46 +390,32 @@
             const amt = parseFloat(document.getElementById('topup-amount')?.value || '0');
             const msg = document.getElementById('topup-order-msg');
             if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
-            const d = await fetchAPI('create_paytm_order', { amount: amt });
-            if (!d || !d.txnToken) { showMessage('Failed to initiate Paytm order.', 'error'); return; }
-            msg.textContent = `Order created: ${d.order_id}. Opening Paytm checkout...`;
-            // Load CheckoutJS
-            const scriptUrl = d.env === 'PROD' ? 'https://securegw.paytm.in/merchantpgpui/checkoutjs/merchants/' : 'https://securegw-stage.paytm.in/merchantpgpui/checkoutjs/merchants/';
-            await new Promise((resolve, reject) => {
-                const s = document.createElement('script'); s.src = scriptUrl + d.mid + '.js'; s.onload = resolve; s.onerror = reject; document.body.appendChild(s);
-            });
-            const config = {
-                root: '',
-                flow: 'DEFAULT',
-                data: {
-                    orderId: d.order_id,
-                    token: d.txnToken,
-                    tokenType: 'TXN_TOKEN',
-                    amount: d.amount
-                },
-                merchant: { mid: d.mid },
-                handler: {
-                    notifyMerchant: async function(eventName, data){
-                        console.log('Paytm Event', eventName, data);
-                        if (eventName === 'APP_CLOSED') {
-                            // Pull fresh balance after user closes checkout
-                            const info = await fetchAPI('load_initial_data');
-                            if (info && typeof info.balance !== 'undefined') {
-                                window.userBalance = info.balance;
-                                document.getElementById('currentBalance').textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
-                                const sb = document.getElementById('sidebarBalance'); if (sb) sb.textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
-                                const lb = document.getElementById('licenseBalanceDisplay'); if (lb) lb.textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
-                                showMessage('Payment processed. Balance refreshed.', 'success');
-                            }
+            // Create UPI QR
+            const res = await fetch('payment.php', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: new URLSearchParams({ action:'create_upi_qr', amount:String(amt), user_id: window.currentUserId })});
+            const j = await res.json();
+            if (!j.success) { showMessage(j.message || 'Failed to create UPI QR', 'error'); return; }
+            msg.innerHTML = `Scan to pay:<br><img src="${j.data.qr_image}" alt="UPI QR" class="mx-auto mt-2 rounded">`;
+            // Poll for status
+            const orderId = j.data.order_id;
+            const poll = async () => {
+                try {
+                    const r = await fetch('payment.php', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: new URLSearchParams({ action:'check_status', order_id: orderId })});
+                    const s = await r.json();
+                    if (s && s.data && (s.data.status === 'TXN_SUCCESS' || s.data.status === 'SUCCESS')) {
+                        showMessage('Payment Successful. Balance will refresh shortly.', 'success');
+                        const info = await fetchAPI('load_initial_data');
+                        if (info && typeof info.balance !== 'undefined') {
+                            window.userBalance = info.balance;
+                            document.getElementById('currentBalance').textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+                            const sb = document.getElementById('sidebarBalance'); if (sb) sb.textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+                            const lb = document.getElementById('licenseBalanceDisplay'); if (lb) lb.textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
                         }
+                        return;
                     }
-                }
+                    setTimeout(poll, 3000);
+                } catch (_) { setTimeout(poll, 4000); }
             };
-            if (window.Paytm && window.Paytm.CheckoutJS) {
-                window.Paytm.CheckoutJS.init(config).then(function(){
-                    window.Paytm.CheckoutJS.invoke();
-                }).catch(function(){ showMessage('Paytm checkout init failed.', 'error'); });
-            } else { showMessage('Paytm SDK not loaded.', 'error'); }
+            poll();
         };
 
         window.checkRole = (requiredRole) => {
