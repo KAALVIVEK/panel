@@ -1,19 +1,26 @@
 <?php
-// Minimal PaytmChecksum implementation (as per official SDK)
-// Source adapted from Paytm official PHP checksum utility
+// Minimal PaytmChecksum implementation (compatible with classic flow)
 class PaytmChecksum {
     private static $iv = '@@@@&&&&####$$$$';
 
     public static function generateSignature($params, $key) {
-        $json = is_string($params) ? $params : json_encode($params, JSON_UNESCAPED_SLASHES);
-        return self::generateSignatureByString($json, $key);
+        if (!is_string($params)) {
+            if (isset($params['CHECKSUMHASH'])) { unset($params['CHECKSUMHASH']); }
+            ksort($params);
+            $params = json_encode($params, JSON_UNESCAPED_SLASHES);
+        }
+        return self::generateSignatureByString($params, $key);
     }
 
     public static function verifySignature($params, $key, $checksum) {
-        $json = is_string($params) ? $params : json_encode($params, JSON_UNESCAPED_SLASHES);
+        if (!is_string($params)) {
+            if (isset($params['CHECKSUMHASH'])) { unset($params['CHECKSUMHASH']); }
+            ksort($params);
+            $params = json_encode($params, JSON_UNESCAPED_SLASHES);
+        }
         $paytm_hash = self::decrypt($checksum, $key);
         $salt = substr($paytm_hash, -4);
-        $finalString = $json . '|' . $salt;
+        $finalString = $params . '|' . $salt;
         $website_hash = hash('sha256', $finalString) . $salt;
         return $paytm_hash === $website_hash;
     }
@@ -27,31 +34,21 @@ class PaytmChecksum {
 
     private static function encrypt($input, $key) {
         $key = html_entity_decode($key);
-        if (function_exists('openssl_encrypt')) {
-            $data = openssl_encrypt($input, 'AES-128-CBC', $key, OPENSSL_ZERO_PADDING, self::$iv);
-        } else {
-            throw new Exception('OpenSSL not available for encryption');
-        }
+        $data = openssl_encrypt($input, 'AES-128-CBC', $key, OPENSSL_ZERO_PADDING, self::$iv);
         return base64_encode($data);
     }
 
     private static function decrypt($encrypted, $key) {
         $key = html_entity_decode($key);
         $data = base64_decode($encrypted);
-        if (function_exists('openssl_decrypt')) {
-            $result = openssl_decrypt($data, 'AES-128-CBC', $key, OPENSSL_ZERO_PADDING, self::$iv);
-        } else {
-            throw new Exception('OpenSSL not available for decryption');
-        }
-        return $result;
+        return openssl_decrypt($data, 'AES-128-CBC', $key, OPENSSL_ZERO_PADDING, self::$iv);
     }
 
     private static function generateRandomString($length) {
         $characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-        $charactersLength = strlen($characters);
         $randomString = '';
         for ($i = 0; $i < $length; $i++) {
-            $randomString .= $characters[rand(0, $charactersLength - 1)];
+            $randomString .= $characters[rand(0, strlen($characters) - 1)];
         }
         return $randomString;
     }

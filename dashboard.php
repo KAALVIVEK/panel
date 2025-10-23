@@ -556,7 +556,7 @@ function ensurePaymentsTables($conn) {
 
 function createPaytmOrder($user_id, $role, $amount) {
     require_once __DIR__ . '/api/config.php';
-    require_once __DIR__ . '/api/paytm_checksum.php';
+    require_once __DIR__ . '/paytm_checksum.php';
     if (!checkRole($role, 'user')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Authorization required.']); return; }
     if ($amount <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid amount.']); return; }
     $conn = connectDB();

@@ -2,7 +2,7 @@
 header('Content-Type: application/json');
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/paytm_checksum.php';
-require_once __DIR__ . '/../dashboard.php'; // reuse DB connection and ensure tables
+require_once __DIR__ . '/dashboard.php';
 
 $inputJSON = file_get_contents('php://input');
 $payload = json_decode($inputJSON, true);
