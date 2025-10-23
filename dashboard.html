@@ -386,6 +386,18 @@
             }
         }
 
+        // Add Balance (UPI QR) - opens new tab with QR page
+        window.createTopupOrder = () => {
+            const input = document.getElementById('topup-amount');
+            const amt = parseFloat(input?.value || '0');
+            if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
+            const orderId = 'ORDER_' + Date.now();
+            const url = `upi_qr.php?amount=${encodeURIComponent(String(amt))}&orderId=${encodeURIComponent(orderId)}`;
+            window.open(url, '_blank');
+            const msg = document.getElementById('topup-order-msg');
+            if (msg) msg.textContent = `Order created: ${orderId}. A new tab opened with the QR code.`;
+        };
+
         window.createTopupOrder = async () => {
             const amt = parseFloat(document.getElementById('topup-amount')?.value || '0');
             const msg = document.getElementById('topup-order-msg');
