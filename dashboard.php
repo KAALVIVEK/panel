@@ -545,8 +545,15 @@ function ensurePaymentsTables($conn) {
         user_id VARCHAR(36) NOT NULL,
         amount DECIMAL(10,2) NOT NULL,
         status VARCHAR(16) NOT NULL DEFAULT 'INIT',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        raw_response MEDIUMTEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    // Add missing columns if table existed before
+    $col = $conn->query("SHOW COLUMNS FROM payments LIKE 'raw_response'");
+    if ($col && $col->num_rows === 0) { @$conn->query("ALTER TABLE payments ADD COLUMN raw_response MEDIUMTEXT NULL"); }
+    $col2 = $conn->query("SHOW COLUMNS FROM payments LIKE 'updated_at'");
+    if ($col2 && $col2->num_rows === 0) { @$conn->query("ALTER TABLE payments ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"); }
 }
 
 function createPaytmOrder($user_id, $role, $amount) {
