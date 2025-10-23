@@ -556,18 +556,39 @@ function createPaytmOrder($user_id, $role, $amount) {
     if ($amount <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid amount.']); return; }
     $conn = connectDB();
     ensurePaymentsTables($conn);
-    $order_id = 'ORD' . date('YmdHis') . substr(md5(uniqid('', true)), 0, 6);
+    $order_id = 'ORD' . date('YmdHis') . strtoupper(substr(md5(uniqid('', true)), 0, 8));
     $stmt = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'INIT')");
     $stmt->bind_param("ssd", $order_id, $user_id, $amount);
     if (!$stmt->execute()) { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Failed to create order.']); $conn->close(); return; }
-    // Return minimal info; frontend will invoke Paytm with merchant config
-    echo json_encode(['success'=>true, 'data'=>['order_id'=>$order_id]]);
+    // Return fields needed for initiating Paytm transaction (replace with your credentials)
+    $mid = getenv('PAYTM_MID') ?: 'YOUR_MID_HERE';
+    $mkey = getenv('PAYTM_MERCHANT_KEY') ?: 'YOUR_MERCHANT_KEY';
+    $website = getenv('PAYTM_WEBSITE') ?: 'DEFAULT';
+    $callbackUrl = (getenv('PAYTM_CALLBACK_URL') ?: ( (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS']==='on'?'https':'http') . '://' . $_SERVER['HTTP_HOST'] . dirname($_SERVER['REQUEST_URI']) . '/dashboard.php'));
+    $txnAmount = number_format($amount, 2, '.', '');
+    $params = [
+        'mid' => $mid,
+        'orderId' => $order_id,
+        'amount' => $txnAmount,
+        'callbackUrl' => $callbackUrl,
+        'custId' => $user_id,
+    ];
+    // Note: Generate signature client-side per latest Paytm JS checkout or server-side if needed
+    echo json_encode(['success'=>true, 'data'=>[
+        'order_id'=>$order_id,
+        'mid'=>$mid,
+        'amount'=>$txnAmount,
+        'callback_url'=>$callbackUrl,
+        'website'=>$website,
+        'params'=>$params
+    ]]);
     $conn->close();
 }
 
 function paytmWebhook() {
     // Paytm server-to-server callback
-    require_once __DIR__ . '/paytm_checksum.php';
+    // Load checksum helper from api/ directory
+    require_once __DIR__ . '/api/paytm_checksum.php';
     $inputJSON = file_get_contents('php://input');
     $payload = json_decode($inputJSON, true);
     if (!$payload) { http_response_code(400); echo json_encode(['success'=>false]); return; }

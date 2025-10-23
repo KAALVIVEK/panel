@@ -370,7 +370,7 @@
             if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
             const data = await fetchAPI('create_paytm_order', { amount: amt });
             if (data && data.order_id) {
-                msg.textContent = `Order created: ${data.order_id}. Proceed to Paytm checkout in your integration.`;
+                msg.textContent = `Order created: ${data.order_id}. MID: ${data.mid}. Use your Paytm JS/SDK to initiate checkout.`;
             }
         };
 
