@@ -1688,7 +1688,7 @@ function ownerBulkAddKeysPool($user_id, $role, $product_id, $keys, $default_dura
 
 /** New: User-facing listing **/
 function listProducts($role) {
-    if (!checkRole($role, 'user')) { http_response_code(403); echo json_encode(['success'=>false,'message':'Authorization required.']); return; }
+    if (!checkRole($role, 'user')) { http_response_code(403); echo json_encode(['success'=>false,'message' => 'Authorization required.']); return; }
     $conn = connectDB();
     $res = $conn->query("SELECT id, name FROM products WHERE status='active' ORDER BY name");
     $rows = [];
@@ -1698,8 +1698,8 @@ function listProducts($role) {
 }
 
 function listDurations($role, $product_id) {
-    if (!checkRole($role, 'user')) { http_response_code(403); echo json_encode(['success'=>false,'message':'Authorization required.']); return; }
-    if ($product_id <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message':'Invalid product id.']); return; }
+    if (!checkRole($role, 'user')) { http_response_code(403); echo json_encode(['success'=>false,'message' => 'Authorization required.']); return; }
+    if ($product_id <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message' => 'Invalid product id.']); return; }
     $conn = connectDB();
     $stmt = $conn->prepare("SELECT id, duration_name, price FROM durations WHERE product_id = ? ORDER BY id");
     $stmt->bind_param("i", $product_id);
