@@ -802,7 +802,8 @@
             const pricing = {};
             inputs.forEach(inp => {
                 const b = inp.getAttribute('data-pricing-bucket') || '_default_';
-                const id = inp.getAttribute('data-pricing-id');
+                const id = (inp.getAttribute('data-pricing-id') || '').trim();
+                if (!id) return;
                 const val = parseFloat(inp.value || '0');
                 if (!pricing[b]) pricing[b] = {};
                 if (!pricing[b][id]) pricing[b][id] = {};
@@ -817,7 +818,7 @@
             // Remove empty buckets or durations to avoid invalid payload
             Object.keys(pricing).forEach(b => {
                 Object.keys(pricing[b]).forEach(id => {
-                    if (!('user' in pricing[b][id]) && !('reseller' in pricing[b][id]) && !('admin' in pricing[b][id])) {
+                    if (!pricing[b][id] || (!('user' in pricing[b][id]) && !('reseller' in pricing[b][id]) && !('admin' in pricing[b][id]))) {
                         delete pricing[b][id];
                     }
                 });

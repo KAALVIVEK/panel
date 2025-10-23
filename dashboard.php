@@ -1590,11 +1590,8 @@ function ownerUpdatePricing($user_id, $role, $pricing) {
         echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
         return;
     }
-    if (!is_array($pricing) || empty($pricing)) {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'Invalid pricing payload.']);
-        return;
-    }
+    if (!is_array($pricing)) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Invalid pricing payload.']); return; }
+    if (empty($pricing)) { echo json_encode(['success' => true]); return; }
     $conn = connectDB();
     ensurePricingTable($conn);
     // We'll upsert role-tiered prices; accept two shapes:
@@ -1623,7 +1620,19 @@ function ownerUpdatePricing($user_id, $role, $pricing) {
             } else {
                 $base = (float)$val;
             }
-            $stmt->bind_param("sssddd", $b, $did, $base, $pu, $pr, $pa);
+            // Ensure NOT NULL base 'price' column gets a value
+            if ($base === null) {
+                if ($pu !== null) { $base = $pu; }
+                elseif ($pr !== null) { $base = $pr; }
+                elseif ($pa !== null) { $base = $pa; }
+                else { $base = 0.00; }
+            }
+            // Bind as strings to allow NULLs when needed for tier columns; MySQL will cast DECIMAL
+            $puParam = ($pu === null) ? null : (string)$pu;
+            $prParam = ($pr === null) ? null : (string)$pr;
+            $paParam = ($pa === null) ? null : (string)$pa;
+            $baseParam = (string)$base;
+            $stmt->bind_param("ssssss", $b, $did, $baseParam, $puParam, $prParam, $paParam);
             $stmt->execute();
         }
     }
