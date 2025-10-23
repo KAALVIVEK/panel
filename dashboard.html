@@ -57,6 +57,7 @@
                     <td class="py-2 text-right">
                         <button class="text-red-400 px-2 py-1 bg-red-700/40 rounded" onclick="deleteProduct(${p.id})">Delete</button>
                         <button class="text-primary px-2 py-1 bg-primary/20 rounded ml-2" onclick="openDurations(${p.id}, '${p.name.replace(/'/g, "&#39;")}')">Durations</button>
+                        <button class="text-cyber-pink px-2 py-1 bg-pink-700/30 rounded ml-2" onclick="openKeysPool(${p.id}, '${p.name.replace(/'/g, "&#39;")}')">Keys Pool</button>
                     </td>
                 </tr>
             `).join('');
@@ -148,6 +149,27 @@
         window.closeOwnerModal = () => {
             const mod = document.getElementById('owner-product-modals');
             if (mod) mod.innerHTML = '';
+        };
+
+        window.openKeysPool = async (productId, productName) => {
+            const body = `
+                <div class="space-y-3">
+                    <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Add Keys (one per line)</label>
+                    <textarea id="keys-pool-input" rows="8" class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg"></textarea>
+                    <div class="flex gap-2">
+                        <input id="keys-pool-default-duration" placeholder="Default duration (optional)" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                        <button class="glowing-button px-4 py-2 rounded" onclick="addKeysPool(${productId})">Add</button>
+                    </div>
+                </div>`;
+            document.getElementById('owner-product-modals').innerHTML = modalTemplate(`Keys Pool - ${productName}`, body);
+        };
+        window.addKeysPool = async (productId) => {
+            const raw = document.getElementById('keys-pool-input')?.value || '';
+            const keys = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            const default_duration = (document.getElementById('keys-pool-default-duration')?.value || '').trim();
+            if (keys.length === 0) { showMessage('No keys provided.', 'error'); return; }
+            const ok = await ownerApi('owner_bulk_add_keys_pool', { product_id: productId, keys, default_duration });
+            if (ok) { showMessage('Keys added to pool.', 'success'); closeOwnerModal(); }
         };
 
         window.openDurations = async (productId, productName) => {
