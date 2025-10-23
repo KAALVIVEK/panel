@@ -95,21 +95,41 @@
             const name = (document.getElementById('new-product-name')?.value || '').trim();
             if (!name) { showMessage('Enter product name.', 'error'); return; }
             const ok = await ownerApi('owner_create_product', { name });
-            if (ok) { showMessage('Product created.', 'success'); document.getElementById('new-product-name').value = ''; renderOwnerProductSection(); }
+            if (ok) {
+                showMessage('Product created.', 'success');
+                document.getElementById('new-product-name').value = '';
+                renderOwnerProductSection();
+                // Also refresh Create License dropdowns
+                await renderProductOptions();
+                await window.handleGameChange();
+            }
         };
         window.updateProductName = async (id, name) => {
             if (!name) { showMessage('Name cannot be empty.', 'error'); return; }
             const ok = await ownerApi('owner_update_product', { id, name });
-            if (ok) { showMessage('Product updated.', 'success'); }
+            if (ok) {
+                showMessage('Product updated.', 'success');
+                await renderProductOptions();
+                await window.handleGameChange();
+            }
         };
         window.updateProductStatus = async (id, status) => {
             const ok = await ownerApi('owner_update_product', { id, status });
-            if (ok) { showMessage('Status updated.', 'success'); }
+            if (ok) {
+                showMessage('Status updated.', 'success');
+                await renderProductOptions();
+                await window.handleGameChange();
+            }
         };
         window.deleteProduct = async (id) => {
             if (!confirm('Delete this product? Durations and keys pool will also be removed.')) return;
             const ok = await ownerApi('owner_delete_product', { id });
-            if (ok) { showMessage('Product deleted.', 'success'); renderOwnerProductSection(); }
+            if (ok) {
+                showMessage('Product deleted.', 'success');
+                renderOwnerProductSection();
+                await renderProductOptions();
+                await window.handleGameChange();
+            }
         };
 
         function modalTemplate(title, bodyHtml) {
@@ -171,11 +191,29 @@
             const price = parseFloat(document.getElementById('new-duration-price')?.value || '0');
             if (!name || !(price > 0)) { showMessage('Enter valid duration and price.', 'error'); return; }
             const ok = await ownerApi('owner_upsert_duration', { product_id: productId, duration_name: name, price });
-            if (ok) { showMessage('Duration upserted.', 'success'); openDurations(productId, ''); }
+            if (ok) {
+                showMessage('Duration upserted.', 'success');
+                openDurations(productId, '');
+                // Refresh Create License duration dropdown if current product matches
+                const sel = document.getElementById('license-game');
+                if (sel && /^\d+$/.test(sel.value) && parseInt(sel.value, 10) === productId) {
+                    await loadDurationsForProduct(productId);
+                    window.updateLicenseTotal();
+                }
+            }
         };
         window.deleteDuration = async (id, productId) => {
             const ok = await ownerApi('owner_delete_duration', { id });
-            if (ok) { showMessage('Duration deleted.', 'success'); openDurations(productId, ''); }
+            if (ok) {
+                showMessage('Duration deleted.', 'success');
+                openDurations(productId, '');
+                // Refresh Create License duration dropdown if current product matches
+                const sel = document.getElementById('license-game');
+                if (sel && /^\d+$/.test(sel.value) && parseInt(sel.value, 10) === productId) {
+                    await loadDurationsForProduct(productId);
+                    window.updateLicenseTotal();
+                }
+            }
         };
 
         window.openKeysPool = async (productId, productName) => {
@@ -373,9 +411,13 @@
             const durationSelect = document.getElementById('license-duration');
             const productSel = document.getElementById('license-game');
             const qtyInput = document.getElementById('license-quantity');
-            const bucket = (productSel && productSel.value) ? productSel.value : '_default_';
-            setCurrentBucket(bucket);
-            renderDurationOptions();
+            const selVal = (productSel && productSel.value) ? productSel.value : '';
+            const isProduct = /^\d+$/.test(selVal);
+            if (!isProduct) {
+                const bucket = selVal || '_default_';
+                setCurrentBucket(bucket);
+                renderDurationOptions();
+            }
             const selectedDuration = durationSelect.value ? LICENSE_OPTIONS.find(opt => opt.id === durationSelect.value) : null;
             const quantity = Math.min(10, Math.max(1, parseInt(qtyInput?.value || '1', 10) || 1));
             if (qtyInput && qtyInput.value !== String(quantity)) qtyInput.value = String(quantity);
@@ -432,13 +474,19 @@
             if (!window.checkRole('user')) { showMessage('Authorization required.', 'error'); return; }
             const totalCost = parseFloat(document.getElementById('licenseTotalCost').textContent);
             const maxDevices = parseInt(document.getElementById('max-devices').value) || 1;
-            const packageId = document.getElementById('license-game').value; // now represents bucket/product name
+            const gameSel = document.getElementById('license-game');
+            const selVal = gameSel.value;
+            const isProduct = /^\d+$/.test(selVal);
+            const productId = isProduct ? parseInt(selVal, 10) : null;
+            const bucket = isProduct ? (gameSel.selectedOptions[0]?.dataset?.name || '_default_') : (selVal || '_default_');
+            // Use product display name as package id if product selected, else bucket name
+            const packageId = isProduct ? (gameSel.selectedOptions[0]?.dataset?.name || `product_${selVal}`) : selVal;
             let durationId = document.getElementById('license-duration').value;
             const customId = document.getElementById('custom-duration-id').value;
             if (durationId === 'custom' && customId) { durationId = customId; }
             const selectedDuration = LICENSE_OPTIONS.find(opt => opt.id === durationId) || { duration: durationId.startsWith('h:') ? `${durationId.slice(2)} Hours` : durationId.startsWith('d:') ? `${durationId.slice(2)} Days` : 'Custom' };
             const quantity = Math.min(10, Math.max(1, parseInt(document.getElementById('license-quantity').value || '1', 10)));
-            const gameName = GAMES.find(g => g.package === packageId).name;
+            const gameName = (gameSel.selectedOptions[0]?.dataset?.name) || (GAMES.find(g => g.package === packageId)?.name) || (gameSel.selectedOptions[0]?.textContent || 'Selected');
             showConfirmationDialog('Confirm License Generation',
                 `You are about to generate **${quantity}** ${gameName} key(s) for **${selectedDuration.duration}** totaling **₹${totalCost.toFixed(2)}**. Deduct balance?`,
                 async (confirmed) => {
@@ -448,7 +496,8 @@
                     }
                     const newKeyData = await fetchAPI('create_license', {
                         package_id: packageId,
-                        bucket: packageId,
+                        bucket: (productId ? null : bucket),
+                        product_id: productId,
                         duration_id: durationId,
                         days: selectedDuration.days,
                         max_devices: maxDevices,
@@ -749,9 +798,8 @@
             if (ok) {
                 showMessage('Pricing saved.', 'success');
                 await syncPricing();
-                renderProductOptions();
-                setCurrentBucket(document.getElementById('license-game')?.value || '_default_');
-                renderDurationOptions();
+                await renderProductOptions();
+                await window.handleGameChange();
                 window.updateLicenseTotal();
             }
         };
@@ -1066,14 +1114,66 @@
             window.renderApp();
         };
 
-        function renderProductOptions() {
+        async function renderProductOptions() {
             const sel = document.getElementById('license-game');
             if (!sel) return;
+            // Try to load products from backend; fallback to pricing buckets
+            let products = await fetchAPI('list_products');
+            products = Array.isArray(products) ? products : [];
+            if (products.length > 0) {
+                sel.innerHTML = products.map((p, idx) => `
+                    <option value="${p.id}" data-name="${p.name}" ${idx === 0 ? 'selected' : ''}>${p.name}</option>
+                `).join('');
+                return;
+            }
             const buckets = Object.keys(PRICING).filter(b => b !== '_default_');
             const opts = buckets.length ? buckets : ['_default_'];
             sel.innerHTML = opts.map((b, idx) => `
                 <option value="${b}" ${idx === 0 ? 'selected' : ''}>${b === '_default_' ? 'Default' : b}</option>
             `).join('');
+        }
+
+        async function loadDurationsForProduct(productId) {
+            const durationSelect = document.getElementById('license-duration');
+            if (!durationSelect) return;
+            // Build LICENSE_OPTIONS from products->durations API
+            const rows = await fetchAPI('list_durations', { product_id: productId });
+            const list = Array.isArray(rows) ? rows : [];
+            LICENSE_OPTIONS.length = 0;
+            const toLabel = (id) => {
+                if (typeof id !== 'string') return String(id);
+                if (id.startsWith('h:')) {
+                    const n = parseInt(id.slice(2), 10); return `${n} Hour${n > 1 ? 's' : ''}`;
+                }
+                if (id.startsWith('d:')) {
+                    const n = parseInt(id.slice(2), 10); return `${n} Day${n > 1 ? 's' : ''}`;
+                }
+                return id.toUpperCase();
+            };
+            list.forEach(r => {
+                const id = r.duration_name || r.id || '';
+                const price = parseFloat(r.price || 0);
+                if (!id || !(price > 0)) return;
+                LICENSE_OPTIONS.push({ id, duration: toLabel(id), days: null, price });
+            });
+            // Fallback: if no product durations yet, derive from pricing bucket named like product
+            if (LICENSE_OPTIONS.length === 0) {
+                const gameSel = document.getElementById('license-game');
+                const productName = gameSel && gameSel.selectedOptions[0] ? (gameSel.selectedOptions[0].dataset.name || '') : '';
+                const entries = PRICING[productName] || {};
+                Object.keys(entries).forEach(id => {
+                    let label = id.startsWith('h:') ? `${id.slice(2)} Hour` : id.startsWith('d:') ? `${id.slice(2)} Day` : id.toUpperCase();
+                    if (label.endsWith(' Day') && parseInt(id.slice(2),10) > 1) label += 's';
+                    LICENSE_OPTIONS.push({ id, duration: label, days: null, price: parseFloat(entries[id]) });
+                });
+            }
+            // Render into the select
+            const optionsHtml = LICENSE_OPTIONS.map((option, index) => `
+                <option value="${option.id}" ${index === 0 ? 'selected' : ''}>
+                    ${option.duration} - ₹${option.price.toFixed(2)}/Device
+                </option>
+            `).join('');
+            durationSelect.innerHTML = optionsHtml;
         }
 
         function renderDurationOptions() {
@@ -1087,19 +1187,31 @@
             durationSelect.innerHTML = optionsHtml;
         }
 
+        window.handleGameChange = async () => {
+            const sel = document.getElementById('license-game');
+            if (!sel) return;
+            const val = sel.value || '';
+            const isProduct = /^\d+$/.test(val);
+            if (isProduct) {
+                await loadDurationsForProduct(parseInt(val, 10));
+            } else {
+                // Fallback to pricing bucket-based durations
+                const bucket = val || '_default_';
+                setCurrentBucket(bucket);
+                renderDurationOptions();
+            }
+            window.updateLicenseTotal();
+        };
+
         document.addEventListener('DOMContentLoaded', () => {
             // Load pricing first, then render product list from it
-            renderDurationOptions();
             if (loadSession()) {
                 // Default to licenses view if none specified
                 window.dashboardView = 'licenses'; 
                 window.loadInitialData();
-                syncPricing().then(() => {
-                    renderProductOptions();
-                    const sel = document.getElementById('license-game');
-                    const first = (sel && sel.value) ? sel.value : Object.keys(PRICING)[0] || '_default_';
-                    setCurrentBucket(first);
-                    renderDurationOptions();
+                syncPricing().then(async () => {
+                    await renderProductOptions();
+                    await window.handleGameChange();
                     window.updateLicenseTotal();
                 });
                 fetchAPI('get_service_status').then(data => {
@@ -1773,7 +1885,7 @@
                             <div>
                                 <label for="license-game"
                                     class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Games</label>
-                                <select id="license-game" required onchange="updateLicenseTotal()"
+                                <select id="license-game" required onchange="handleGameChange()"
                                     class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
                                     </select>
                             </div>
