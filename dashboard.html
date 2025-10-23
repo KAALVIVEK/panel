@@ -391,31 +391,10 @@
             const msg = document.getElementById('topup-order-msg');
             if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
             // Create UPI QR
-            const res = await fetch('payment.php', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: new URLSearchParams({ action:'create_upi_qr', amount:String(amt), user_id: window.currentUserId })});
-            const j = await res.json();
-            if (!j.success) { showMessage(j.message || 'Failed to create UPI QR', 'error'); return; }
-            msg.innerHTML = `Scan to pay:<br><img src="${j.data.qr_image}" alt="UPI QR" class="mx-auto mt-2 rounded">`;
-            // Poll for status
-            const orderId = j.data.order_id;
-            const poll = async () => {
-                try {
-                    const r = await fetch('payment.php', { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: new URLSearchParams({ action:'check_status', order_id: orderId })});
-                    const s = await r.json();
-                    if (s && s.data && (s.data.status === 'TXN_SUCCESS' || s.data.status === 'SUCCESS')) {
-                        showMessage('Payment Successful. Balance will refresh shortly.', 'success');
-                        const info = await fetchAPI('load_initial_data');
-                        if (info && typeof info.balance !== 'undefined') {
-                            window.userBalance = info.balance;
-                            document.getElementById('currentBalance').textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
-                            const sb = document.getElementById('sidebarBalance'); if (sb) sb.textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
-                            const lb = document.getElementById('licenseBalanceDisplay'); if (lb) lb.textContent = `₹${(window.userBalance).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
-                        }
-                        return;
-                    }
-                    setTimeout(poll, 3000);
-                } catch (_) { setTimeout(poll, 4000); }
-            };
-            poll();
+            // Open UPI QR page in a new tab for better UX
+            const orderId = 'ORDER_' + Date.now();
+            window.open(`upi_qr.php?amount=${encodeURIComponent(String(amt))}&orderId=${encodeURIComponent(orderId)}`,'_blank');
+            msg.textContent = `Order created: ${orderId}. A new tab was opened with the QR code.`;
         };
 
         window.checkRole = (requiredRole) => {
