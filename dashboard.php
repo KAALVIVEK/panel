@@ -1529,7 +1529,8 @@ function getPricing($role) {
     }
     $conn = connectDB();
     ensurePricingTable($conn);
-    $input = json_decode(file_get_contents('php://input'), true) ?? [];
+    // Use already-parsed global input so we don't re-read php://input
+    global $input;
     $full = !empty($input['full']) && checkRole($role, 'owner');
     $res = $conn->query("SELECT bucket, duration_id, price, price_user, price_reseller, price_admin FROM pricing ORDER BY bucket, duration_id");
     $pricing = [];
