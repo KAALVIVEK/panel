@@ -391,7 +391,8 @@
             const input = document.getElementById('topup-amount');
             const amt = parseFloat(input?.value || '0');
             if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
-            const params = new URLSearchParams({ amount: String(amt), remark1: String(window.currentUserId || ''), remark2: 'topup' });
+            const uid = String(window.currentUserId || localStorage.getItem('ztrax_user_id') || '');
+            const params = new URLSearchParams({ amount: String(amt), remark1: uid, remark2: 'topup' });
             const url = `create_order.php?${params.toString()}`;
             window.open(url, '_blank');
             const msg = document.getElementById('topup-order-msg');
@@ -403,7 +404,8 @@
             const msg = document.getElementById('topup-order-msg');
             if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
             // Open payment order page in a new tab
-            const params2 = new URLSearchParams({ amount: String(amt), remark1: String(window.currentUserId || ''), remark2: 'topup' });
+            const uid2 = String(window.currentUserId || localStorage.getItem('ztrax_user_id') || '');
+            const params2 = new URLSearchParams({ amount: String(amt), remark1: uid2, remark2: 'topup' });
             window.open(`create_order.php?${params2.toString()}`,'_blank');
             if (msg) msg.textContent = `Redirected to payment page for ₹${amt.toFixed(2)}.`;
         };
