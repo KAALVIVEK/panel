@@ -33,6 +33,9 @@ function sanitizeAmount($value, float $default = 10.00): float {
 // Inputs
 $amount = sanitizeAmount($_POST['amount'] ?? $_GET['amount'] ?? null);
 $orderId = generateOrderId();
+// Optional metadata to pass-through (gateway accepts remark1, remark2)
+$remark1 = isset($_REQUEST['remark1']) ? substr(trim((string)$_REQUEST['remark1']), 0, 64) : '';
+$remark2 = isset($_REQUEST['remark2']) ? substr(trim((string)$_REQUEST['remark2']), 0, 64) : '';
 
 // Request to Gateway
 $payload = [
@@ -45,10 +48,13 @@ $ch = curl_init($url);
 curl_setopt($ch, CURLOPT_POST, true);
 // Align with gateway: form-encoded body including user_token and route
 $form = [
-    'user_token' => USER_TOKEN,
-    'order_id'   => $payload['order_id'],
-    'amount'     => $payload['amount'],
-    'route'      => defined('DEFAULT_ROUTE') ? DEFAULT_ROUTE : 1,
+    'user_token'   => USER_TOKEN,
+    'order_id'     => $payload['order_id'],
+    'amount'       => $payload['amount'],
+    'redirect_url' => defined('GATEWAY_REDIRECT_URL') ? GATEWAY_REDIRECT_URL : 'https://pay.t-g.xyz/',
+    'remark1'      => $remark1,
+    'remark2'      => $remark2,
+    'route'        => defined('DEFAULT_ROUTE') ? DEFAULT_ROUTE : 1,
 ];
 curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($form));
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
