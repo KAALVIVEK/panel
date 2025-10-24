@@ -30,7 +30,132 @@ function connectDB() {
     if ($conn->connect_error) {
         throw new Exception("Database connection failed: " . $conn->connect_error);
     }
+    ensureDashboardCoreTables($conn);
     return $conn;
+}
+
+/** Creates core tables used by dashboard APIs if missing */
+function ensureDashboardCoreTables($conn) {
+    // users
+    $conn->query("CREATE TABLE IF NOT EXISTS users (
+        user_id VARCHAR(36) NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        name VARCHAR(100) NOT NULL DEFAULT 'Ztrax User',
+        role ENUM('user','reseller','admin','owner') NOT NULL DEFAULT 'user',
+        balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        referred_by_id VARCHAR(36) NULL,
+        status ENUM('Active','Blocked') NOT NULL DEFAULT 'Active',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id),
+        UNIQUE KEY uniq_users_email (email),
+        KEY idx_users_referred_by (referred_by_id),
+        KEY idx_users_role (role)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // licenses
+    $conn->query("CREATE TABLE IF NOT EXISTS licenses (
+        license_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        key_string VARCHAR(64) NOT NULL,
+        game_package VARCHAR(100) NOT NULL,
+        duration VARCHAR(16) NOT NULL,
+        max_devices INT UNSIGNED NOT NULL DEFAULT 1,
+        devices_used INT UNSIGNED NOT NULL DEFAULT 0,
+        linked_device_id VARCHAR(64) NULL,
+        status ENUM('Issued','Active','Banned','Deleted') NOT NULL DEFAULT 'Issued',
+        creator_id VARCHAR(36) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires DATETIME NULL,
+        PRIMARY KEY (license_id),
+        UNIQUE KEY uniq_licenses_key_string (key_string),
+        KEY idx_licenses_creator (creator_id),
+        KEY idx_licenses_status (status),
+        KEY idx_licenses_created_at (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // referrals
+    $conn->query("CREATE TABLE IF NOT EXISTS referrals (
+        code CHAR(8) NOT NULL,
+        initial_balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        max_role ENUM('user','reseller','admin') NOT NULL DEFAULT 'user',
+        creator_id VARCHAR(36) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (code),
+        KEY idx_referrals_creator (creator_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // service flags
+    $conn->query("CREATE TABLE IF NOT EXISTS service_flags (
+        flag VARCHAR(64) PRIMARY KEY,
+        value VARCHAR(16) NOT NULL DEFAULT '0',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // system_keys
+    $conn->query("CREATE TABLE IF NOT EXISTS system_keys (
+        key_string VARCHAR(64) PRIMARY KEY,
+        name VARCHAR(128) NOT NULL,
+        created_by_id VARCHAR(36) NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'Generated',
+        duration VARCHAR(16) NULL,
+        bucket VARCHAR(64) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // pricing
+    $conn->query("CREATE TABLE IF NOT EXISTS pricing (
+        duration_id VARCHAR(16) NOT NULL,
+        bucket VARCHAR(64) NULL,
+        price DECIMAL(10,2) NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_bucket_duration (bucket, duration_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // api_keys
+    $conn->query("CREATE TABLE IF NOT EXISTS api_keys (
+        api_key CHAR(40) PRIMARY KEY,
+        amount DECIMAL(10,2) NOT NULL,
+        created_by_id VARCHAR(36) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // products (owner-managed)
+    $conn->query("CREATE TABLE IF NOT EXISTS products (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        name VARCHAR(64) NOT NULL,
+        status ENUM('active','inactive') NOT NULL DEFAULT 'active',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_products_name (name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // durations per product
+    $conn->query("CREATE TABLE IF NOT EXISTS durations (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        product_id INT UNSIGNED NOT NULL,
+        duration_name VARCHAR(32) NOT NULL,
+        price DECIMAL(10,2) NOT NULL,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_product_duration (product_id, duration_name),
+        KEY idx_durations_product (product_id),
+        CONSTRAINT fk_durations_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // keys pool per product
+    $conn->query("CREATE TABLE IF NOT EXISTS keys_pool (
+        id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        product_id INT UNSIGNED NOT NULL,
+        key_value VARCHAR(64) NOT NULL,
+        default_duration VARCHAR(16) NULL,
+        is_used TINYINT(1) NOT NULL DEFAULT 0,
+        used_at DATETIME NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_keys_pool_value (key_value),
+        KEY idx_keys_pool_product (product_id),
+        KEY idx_keys_pool_used (is_used),
+        CONSTRAINT fk_keys_pool_product FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 }
 
 /**
@@ -48,21 +173,27 @@ function checkRole($currentRole, $requiredRole) {
 // --- 3. INPUT HANDLING ---
 $inputJSON = file_get_contents('php://input');
 $input = json_decode($inputJSON, true);
+if (!is_array($input)) { $input = $_POST ?? []; }
 
-// Check if input is valid
-if (!isset($input['action'])) {
+// Determine action via body first, then query param; fallback for Paytm callbacks
+$action = $input['action'] ?? ($_GET['action'] ?? null);
+if (!$action && (isset($input['ORDERID']) || isset($_REQUEST['ORDERID']))) {
+    $action = 'paytm_webhook';
+}
+
+if (!$action) {
     http_response_code(400);
     echo json_encode(['success' => false, 'message' => 'Invalid API request format.']);
     exit();
 }
 
-$action = $input['action'];
 $user_id = $input['user_id'] ?? null;
 $role = $input['role'] ?? null;
 
 // --- 4. API ROUTING ---
 try {
     switch ($action) {
+        // Paytm UPI QR flow handled via separate payment.php; legacy API removed
         case 'load_initial_data':
             loadInitialData($user_id);
             break;
@@ -163,6 +294,61 @@ try {
             break;
         case 'owner_extend_all_licenses':
             ownerExtendAllLicenses($user_id, $role, (float)($input['extra_days'] ?? 0));
+            break;
+
+        case 'owner_bulk_add_keys':
+            ownerBulkAddKeys(
+                $user_id,
+                $role,
+                $input['keys'] ?? [],
+                $input['name'] ?? 'SYSTEM',
+                $input['bucket'] ?? null,
+                $input['duration'] ?? null
+            );
+            break;
+        case 'get_pricing':
+            getPricing($role);
+            break;
+        case 'owner_update_pricing':
+            ownerUpdatePricing($user_id, $role, $input['pricing'] ?? []);
+            break;
+
+        case 'get_catalog':
+            getCatalog($role);
+            break;
+
+        // Product & Pricing management
+        case 'owner_list_products':
+            ownerListProducts($user_id, $role);
+            break;
+        case 'owner_create_product':
+            ownerCreateProduct($user_id, $role, trim($input['name'] ?? ''));
+            break;
+        case 'owner_update_product':
+            ownerUpdateProduct($user_id, $role, (int)($input['id'] ?? 0), trim($input['name'] ?? ''), trim($input['status'] ?? 'active'));
+            break;
+        case 'owner_delete_product':
+            ownerDeleteProduct($user_id, $role, (int)($input['id'] ?? 0));
+            break;
+        case 'owner_list_durations':
+            ownerListDurations($user_id, $role, (int)($input['product_id'] ?? 0));
+            break;
+        case 'owner_upsert_duration':
+            ownerUpsertDuration($user_id, $role, (int)($input['product_id'] ?? 0), trim($input['duration_name'] ?? ''), (float)($input['price'] ?? 0));
+            break;
+        case 'owner_delete_duration':
+            ownerDeleteDuration($user_id, $role, (int)($input['id'] ?? 0));
+            break;
+        case 'owner_bulk_add_keys_pool':
+            ownerBulkAddKeysPool($user_id, $role, (int)($input['product_id'] ?? 0), $input['keys'] ?? [], trim($input['default_duration'] ?? ''));
+            break;
+
+        // User-facing product/duration catalog
+        case 'list_products':
+            listProducts($role);
+            break;
+        case 'list_durations':
+            listDurations($role, (int)($input['product_id'] ?? 0));
             break;
 
         // Token-based API (for bots/external integrations)
@@ -325,6 +511,15 @@ function loadLicenses($user_id, $role) {
  * Maps duration id to hours for expiry computation.
  */
 function getDurationHours($duration_id) {
+    // Support custom formats: h:<hours> or d:<days>
+    if (is_string($duration_id)) {
+        if (preg_match('/^h:(\d{1,5})$/', $duration_id, $m)) {
+            return max(1, (int)$m[1]);
+        }
+        if (preg_match('/^d:(\d{1,5})$/', $duration_id, $m)) {
+            return max(1, (int)$m[1]) * 24;
+        }
+    }
     $map = [
         'opt1' => 5,     // 5 hours
         'opt2' => 24,    // 1 day
@@ -342,6 +537,122 @@ function ensureServiceFlagsTable($conn) {
     $conn->query("CREATE TABLE IF NOT EXISTS service_flags (flag VARCHAR(64) PRIMARY KEY, value VARCHAR(16) NOT NULL DEFAULT '0', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)");
 }
 
+function ensurePaymentsTables($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS payments (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        order_id VARCHAR(64) UNIQUE,
+        txn_id VARCHAR(64) NULL,
+        user_id VARCHAR(36) NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'INIT',
+        raw_response MEDIUMTEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    // Add missing columns if table existed before
+    $col = $conn->query("SHOW COLUMNS FROM payments LIKE 'raw_response'");
+    if ($col && $col->num_rows === 0) { @$conn->query("ALTER TABLE payments ADD COLUMN raw_response MEDIUMTEXT NULL"); }
+    $col2 = $conn->query("SHOW COLUMNS FROM payments LIKE 'updated_at'");
+    if ($col2 && $col2->num_rows === 0) { @$conn->query("ALTER TABLE payments ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"); }
+}
+
+function createPaytmOrder($user_id, $role, $amount) {
+    require_once __DIR__ . '/api/config.php';
+    require_once __DIR__ . '/paytm_checksum.php';
+    if (!checkRole($role, 'user')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Authorization required.']); return; }
+    if ($amount <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid amount.']); return; }
+    $conn = connectDB();
+    ensurePaymentsTables($conn);
+    $order_id = 'ORD' . date('YmdHis') . strtoupper(substr(md5(uniqid('', true)), 0, 8));
+    $stmt = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'INIT')");
+    $stmt->bind_param("ssd", $order_id, $user_id, $amount);
+    if (!$stmt->execute()) { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Failed to create order.']); $conn->close(); return; }
+    // Prepare initiateTransaction payload
+    $txnAmount = number_format($amount, 2, '.', '');
+    $body = [
+        'requestType' => 'Payment',
+        'mid' => PAYTM_MID,
+        'websiteName' => PAYTM_WEBSITE,
+        'orderId' => $order_id,
+        'callbackUrl' => PAYTM_CALLBACK_URL,
+        'txnAmount' => [ 'value' => $txnAmount, 'currency' => 'INR' ],
+        'userInfo' => [ 'custId' => $user_id ]
+    ];
+    $checksum = PaytmChecksum::generateSignature(json_encode($body, JSON_UNESCAPED_SLASHES), PAYTM_MERCHANT_KEY);
+    $payload = json_encode(['body'=>$body, 'head'=>['signature'=>$checksum]], JSON_UNESCAPED_SLASHES);
+    $host = PAYTM_ENVIRONMENT === 'PROD' ? 'https://securegw.paytm.in' : 'https://securegw-stage.paytm.in';
+    $url = $host . '/theia/api/v1/initiateTransaction?mid=' . PAYTM_MID . '&orderId=' . $order_id;
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+    $resp = curl_exec($ch);
+    $err = curl_error($ch);
+    curl_close($ch);
+    if ($err || !$resp) { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Paytm initiateTransaction failed.']); $conn->close(); return; }
+    $res = json_decode($resp, true);
+    if (!isset($res['body']['txnToken'])) { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Paytm did not return txnToken.']); $conn->close(); return; }
+    echo json_encode(['success'=>true, 'data'=>[
+        'order_id'=>$order_id,
+        'mid'=>PAYTM_MID,
+        'txnToken'=>$res['body']['txnToken'],
+        'amount'=>$txnAmount,
+        'callback_url'=>PAYTM_CALLBACK_URL,
+        'env'=>PAYTM_ENVIRONMENT
+    ]]);
+    $conn->close();
+}
+
+function paytmWebhook() {
+    // Paytm server-to-server callback
+    // Load checksum helper from api/ directory
+    require_once __DIR__ . '/api/paytm_checksum.php';
+    $inputJSON = file_get_contents('php://input');
+    $payload = json_decode($inputJSON, true);
+    if (!$payload) { http_response_code(400); echo json_encode(['success'=>false]); return; }
+    $orderId = $payload['ORDERID'] ?? $payload['orderId'] ?? null;
+    $status = $payload['STATUS'] ?? $payload['status'] ?? null;
+    $amount = (float)($payload['TXNAMOUNT'] ?? $payload['txnAmount'] ?? 0);
+    $checksum = $payload['CHECKSUMHASH'] ?? $payload['checksum'] ?? '';
+    // Verify checksum if merchant key provided via env
+    $merchantKey = getenv('PAYTM_MERCHANT_KEY') ?: '';
+    if ($merchantKey && !PaytmChecksum::verifySignature($payload, $merchantKey, $checksum)) {
+        http_response_code(400); echo json_encode(['success'=>false,'message'=>'Checksum failed']); return;
+    }
+    $conn = connectDB();
+    ensurePaymentsTables($conn);
+    // Fetch order and user
+    $stmt = $conn->prepare("SELECT user_id, amount, status FROM payments WHERE order_id = ? LIMIT 1");
+    $stmt->bind_param("s", $orderId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    if (!$row) { http_response_code(404); echo json_encode(['success'=>false,'message'=>'Order not found']); $conn->close(); return; }
+    // Idempotency: only process if not already success
+    if ($row['status'] === 'SUCCESS') { echo json_encode(['success'=>true]); $conn->close(); return; }
+    // Basic validation
+    if ($status === 'TXN_SUCCESS' || $status === 'SUCCESS') {
+        // Update payment
+        $upd = $conn->prepare("UPDATE payments SET status='SUCCESS', payload=? WHERE order_id = ?");
+        $pl = $inputJSON;
+        $upd->bind_param("ss", $pl, $orderId);
+        $upd->execute();
+        // Credit user balance
+        $uid = $row['user_id'];
+        $amt = $row['amount'];
+        $credit = $conn->prepare("UPDATE users SET balance = balance + ? WHERE user_id = ?");
+        $credit->bind_param("ds", $amt, $uid);
+        $credit->execute();
+        echo json_encode(['success'=>true]);
+    } else {
+        $upd = $conn->prepare("UPDATE payments SET status='FAILED', payload=? WHERE order_id = ?");
+        $pl = $inputJSON;
+        $upd->bind_param("ss", $pl, $orderId);
+        $upd->execute();
+        echo json_encode(['success'=>true]);
+    }
+    $conn->close();
+}
 function getServiceStatus() {
     $conn = connectDB();
     ensureServiceFlagsTable($conn);
@@ -349,6 +660,104 @@ function getServiceStatus() {
     $enabled = ($res && $row = $res->fetch_assoc()) ? $row['value'] === '1' : true; // default enabled
     echo json_encode(['success' => true, 'data' => ['key_generation_enabled' => $enabled]]);
     $conn->close();
+}
+
+/** Ensure system_keys table exists for pre-added keys pool */
+function ensureSystemKeysTable($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS system_keys (
+        key_string VARCHAR(64) PRIMARY KEY,
+        name VARCHAR(128) NOT NULL,
+        created_by_id VARCHAR(36) NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'Generated',
+        duration VARCHAR(16) NULL,
+        bucket VARCHAR(64) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )");
+    // Best-effort schema upgrade if column didn't exist before (guarded)
+    $hasDuration = $conn->query("SHOW COLUMNS FROM system_keys LIKE 'duration'");
+    if ($hasDuration && $hasDuration->num_rows === 0) {
+        $conn->query("ALTER TABLE system_keys ADD COLUMN duration VARCHAR(16) NULL");
+    }
+    $hasBucket = $conn->query("SHOW COLUMNS FROM system_keys LIKE 'bucket'");
+    if ($hasBucket && $hasBucket->num_rows === 0) {
+        $conn->query("ALTER TABLE system_keys ADD COLUMN bucket VARCHAR(64) NULL");
+    }
+}
+
+/** Pricing helpers **/
+function ensurePricingTable($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS pricing (
+        duration_id VARCHAR(16) NOT NULL,
+        bucket VARCHAR(64) NULL,
+        price DECIMAL(10,2) NOT NULL,
+        price_user DECIMAL(10,2) NULL,
+        price_reseller DECIMAL(10,2) NULL,
+        price_admin DECIMAL(10,2) NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_bucket_duration (bucket, duration_id)
+    )");
+    // Schema upgrades for legacy tables
+    $hasBucket = $conn->query("SHOW COLUMNS FROM pricing LIKE 'bucket'");
+    if ($hasBucket && $hasBucket->num_rows === 0) {
+        $conn->query("ALTER TABLE pricing ADD COLUMN bucket VARCHAR(64) NULL");
+    }
+    $hasPriceUser = $conn->query("SHOW COLUMNS FROM pricing LIKE 'price_user'");
+    if ($hasPriceUser && $hasPriceUser->num_rows === 0) {
+        $conn->query("ALTER TABLE pricing ADD COLUMN price_user DECIMAL(10,2) NULL AFTER price");
+    }
+    $hasPriceReseller = $conn->query("SHOW COLUMNS FROM pricing LIKE 'price_reseller'");
+    if ($hasPriceReseller && $hasPriceReseller->num_rows === 0) {
+        $conn->query("ALTER TABLE pricing ADD COLUMN price_reseller DECIMAL(10,2) NULL AFTER price_user");
+    }
+    $hasPriceAdmin = $conn->query("SHOW COLUMNS FROM pricing LIKE 'price_admin'");
+    if ($hasPriceAdmin && $hasPriceAdmin->num_rows === 0) {
+        $conn->query("ALTER TABLE pricing ADD COLUMN price_admin DECIMAL(10,2) NULL AFTER price_reseller");
+    }
+    $idxRes = $conn->query("SHOW INDEX FROM pricing WHERE Key_name = 'uniq_bucket_duration'");
+    if (!$idxRes || $idxRes->num_rows === 0) {
+        // Best-effort; ignore if fails due to duplicates
+        @$conn->query("ALTER TABLE pricing ADD UNIQUE KEY uniq_bucket_duration (bucket, duration_id)");
+    }
+}
+
+function getDefaultPricing() { return []; }
+
+/**
+ * Claims the next available pre-added key from system_keys.
+ * Caller should be inside a transaction for row-level locks to apply.
+ * Returns key string or null when unavailable.
+ */
+function claimPreAddedKey($conn) {
+    ensureSystemKeysTable($conn);
+    // Lock next available key and mark it as Issued; optional filter by bucket
+    $requestedBucket = $GLOBALS['input']['bucket'] ?? null;
+    $useBucket = ($requestedBucket && preg_match('/^[A-Za-z0-9._\-]{1,64}$/', $requestedBucket)) ? $requestedBucket : null;
+    if ($useBucket) {
+        $select = $conn->prepare("SELECT key_string, duration FROM system_keys WHERE status = 'Generated' AND bucket = ? ORDER BY created_at ASC LIMIT 1 FOR UPDATE");
+        if (!$select) { return null; }
+        $select->bind_param("s", $useBucket);
+        $select->execute();
+    } else {
+        $select = $conn->prepare("SELECT key_string, duration FROM system_keys WHERE status = 'Generated' ORDER BY created_at ASC LIMIT 1 FOR UPDATE");
+        if (!$select) { return null; }
+        $select->execute();
+    }
+    $res = $select->get_result();
+    $row = $res ? $res->fetch_assoc() : null;
+    $select->close();
+    if (!$row || empty($row['key_string'])) { return null; }
+    $candidate = $row['key_string'];
+    $update = $conn->prepare("UPDATE system_keys SET status = 'Issued' WHERE key_string = ? AND status = 'Generated'");
+    if (!$update) { return null; }
+    $update->bind_param("s", $candidate);
+    $update->execute();
+    $ok = $update->affected_rows === 1;
+    $update->close();
+    if (!$ok) { return null; }
+    return [
+        'key_string' => $candidate,
+        'duration' => $row['duration'] ?? null,
+    ];
 }
 
 function ownerSetKeyGeneration($user_id, $role, $enabled) {
@@ -377,15 +786,92 @@ function createLicense($user_id, $role, $input) {
         return;
     }
     
-    $cost = (float)($input['cost'] ?? 0);
-    if ($cost <= 0) {
+    $quantity = isset($input['quantity']) ? (int)$input['quantity'] : 1;
+    if ($quantity < 1) { $quantity = 1; }
+    if ($quantity > 10) { $quantity = 10; }
+
+    $conn = connectDB();
+    ensurePricingTable($conn);
+
+    // Determine unit price from pricing for provided bucket/duration
+    $bucket = isset($input['bucket']) && preg_match('/^[A-Za-z0-9._\-]{1,64}$/', (string)$input['bucket']) ? (string)$input['bucket'] : null;
+    $durationId = (string)($input['duration_id'] ?? '');
+    $productId = isset($input['product_id']) ? (int)$input['product_id'] : 0;
+    if ($durationId === '') {
         http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'Invalid license cost.']);
+        echo json_encode(['success' => false, 'message' => 'Missing duration_id.']);
         return;
     }
 
-    $conn = connectDB();
-    
+    $unitPrice = 0.0;
+    // Prefer role-tiered PRICING using product name when product_id is provided; fallback to durations table
+    if ($productId > 0) {
+        // Load product name to use as bucket key
+        $pn = $conn->prepare("SELECT name FROM products WHERE id = ? LIMIT 1");
+        if ($pn) {
+            $pn->bind_param("i", $productId);
+            $pn->execute();
+            $pRow = $pn->get_result()->fetch_assoc();
+            $pn->close();
+            $productName = $pRow['name'] ?? null;
+            if ($productName) {
+                $tierCol = ($role === 'reseller') ? 'price_reseller' : (($role === 'admin' || $role === 'owner') ? 'price_admin' : 'price_user');
+                $ps = $conn->prepare("SELECT price, $tierCol AS tier_price FROM pricing WHERE bucket = ? AND duration_id = ? LIMIT 1");
+                if ($ps) {
+                    $ps->bind_param("ss", $productName, $durationId);
+                    $ps->execute();
+                    $row = $ps->get_result()->fetch_assoc();
+                    $ps->close();
+                    if ($row) {
+                        $unitPrice = isset($row['tier_price']) && (float)$row['tier_price'] > 0 ? (float)$row['tier_price'] : (float)($row['price'] ?? 0);
+                    }
+                }
+            }
+        }
+        // Fallback to durations table price if tiered pricing not found
+        if ($unitPrice <= 0) {
+            $ps = $conn->prepare("SELECT price FROM durations WHERE product_id = ? AND duration_name = ? LIMIT 1");
+            if ($ps) {
+                $ps->bind_param("is", $productId, $durationId);
+                $ps->execute();
+                $row = $ps->get_result()->fetch_assoc();
+                $ps->close();
+                if ($row) { $unitPrice = (float)$row['price']; }
+            }
+        }
+    }
+    if ($bucket !== null) {
+        // Choose role-based tier when available
+        $tierCol = ($role === 'reseller') ? 'price_reseller' : (($role === 'admin' || $role === 'owner') ? 'price_admin' : 'price_user');
+        $ps = $conn->prepare("SELECT price, $tierCol AS tier_price FROM pricing WHERE bucket = ? AND duration_id = ? LIMIT 1");
+        $ps->bind_param("ss", $bucket, $durationId);
+        $ps->execute();
+        $row = $ps->get_result()->fetch_assoc();
+        $ps->close();
+        if ($row) {
+            $unitPrice = isset($row['tier_price']) && (float)$row['tier_price'] > 0 ? (float)$row['tier_price'] : (float)($row['price'] ?? 0);
+        }
+    }
+    if ($unitPrice <= 0) {
+        $tierCol = ($role === 'reseller') ? 'price_reseller' : (($role === 'admin' || $role === 'owner') ? 'price_admin' : 'price_user');
+        $ps = $conn->prepare("SELECT price, $tierCol AS tier_price FROM pricing WHERE bucket IS NULL AND duration_id = ? LIMIT 1");
+        if ($ps) {
+            $ps->bind_param("s", $durationId);
+            $ps->execute();
+            $row = $ps->get_result()->fetch_assoc();
+            $ps->close();
+            if ($row) {
+                $unitPrice = isset($row['tier_price']) && (float)$row['tier_price'] > 0 ? (float)$row['tier_price'] : (float)($row['price'] ?? 0);
+            }
+        }
+    }
+    if ($unitPrice <= 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Pricing not configured for selected product/duration.']);
+        return;
+    }
+    $totalCost = $unitPrice * $quantity;
+
     $conn->begin_transaction();
     $stmt = $conn->prepare("SELECT balance FROM users WHERE user_id = ? FOR UPDATE");
     $stmt->bind_param("s", $user_id);
@@ -393,7 +879,7 @@ function createLicense($user_id, $role, $input) {
     $userBalance = $stmt->get_result()->fetch_assoc()['balance'] ?? 0;
     $stmt->close();
 
-    if ($userBalance < $cost) {
+    if ($userBalance < $totalCost) {
         $conn->rollback();
         http_response_code(402);
         echo json_encode(['success' => false, 'message' => 'Insufficient balance.']);
@@ -401,33 +887,83 @@ function createLicense($user_id, $role, $input) {
         return;
     }
     
-    $key_string = bin2hex(random_bytes(11)); 
-    $max_devices = (int)($input['max_devices'] ?? 1);
-    $duration = $input['duration_id'];
+    $max_devices = 1; // fixed
     $game_package = $input['package_id'];
-    $days = $input['days'] ?? null; 
-    $expires = NULL; // start on first use (activation)
-    
-    $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) 
-            VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
-    $stmt = $conn->prepare($sql);
-    
-    if (!$stmt->bind_param("sssiss", $key_string, $game_package, $duration, $max_devices, $user_id, $expires) || !$stmt->execute()) {
-        $error_message = $conn->error;
+    $productId = isset($input['product_id']) ? (int)$input['product_id'] : 0;
+    $expires = NULL; // start on first use
+    $durationInput = $durationId;
+    $keys = [];
+
+    $insertSql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
+    $ins = $conn->prepare($insertSql);
+    if (!$ins) {
         $conn->rollback();
         http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'Key creation failed: ' . $error_message]);
+        echo json_encode(['success' => false, 'message' => 'Preparation failed for license insert.']);
         $conn->close();
         return;
     }
-    
-    $newBalance = $userBalance - $cost;
+    for ($i = 0; $i < $quantity; $i++) {
+        // Prefer keys_pool when product is provided; fallback to system_keys
+        $key_string = null;
+        if ($productId > 0) {
+            // lock next unused key for product
+            $sel = $conn->prepare("SELECT id, key_value, default_duration FROM keys_pool WHERE product_id = ? AND is_used = 0 ORDER BY id ASC LIMIT 1 FOR UPDATE");
+            $sel->bind_param("i", $productId);
+            $sel->execute();
+            $r = $sel->get_result()->fetch_assoc();
+            $sel->close();
+            if (!$r) {
+                $conn->rollback();
+                http_response_code(409);
+                echo json_encode(['success'=>false,'message'=>'No unused keys in pool for selected product.']);
+                $conn->close();
+                return;
+            }
+            $kpId = (int)$r['id'];
+            $key_string = $r['key_value'];
+            $pooledDur = $r['default_duration'];
+            // mark used
+            $upd = $conn->prepare("UPDATE keys_pool SET is_used = 1, used_at = NOW() WHERE id = ? AND is_used = 0");
+            $upd->bind_param("i", $kpId);
+            $upd->execute();
+            if ($upd->affected_rows !== 1) {
+                $conn->rollback();
+                http_response_code(409);
+                echo json_encode(['success'=>false,'message'=>'Key reservation race condition. Try again.']);
+                $conn->close();
+                return;
+            }
+            $duration = $pooledDur ?: $durationInput;
+        } else {
+            $claimed = claimPreAddedKey($conn);
+            if (!$claimed) {
+                $conn->rollback();
+                http_response_code(409);
+                echo json_encode(['success' => false, 'message' => 'Insufficient pre-added keys available. Try fewer quantity or contact owner.']);
+                $conn->close();
+                return;
+            }
+            $key_string = $claimed['key_string'];
+            $duration = $claimed['duration'] ?: $durationInput;
+        }
+        if (!$ins->bind_param("sssiss", $key_string, $game_package, $duration, $max_devices, $user_id, $expires) || !$ins->execute()) {
+            $conn->rollback();
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => 'Key creation failed during batch.']);
+            $conn->close();
+            return;
+        }
+        $keys[] = $key_string;
+    }
+
+    $newBalance = $userBalance - $totalCost;
     $stmt = $conn->prepare("UPDATE users SET balance = ? WHERE user_id = ?");
     $stmt->bind_param("ds", $newBalance, $user_id);
     $stmt->execute();
     
     $conn->commit();
-    echo json_encode(['success' => true, 'data' => ['key_string' => $key_string, 'new_balance' => $newBalance]]);
+    echo json_encode(['success' => true, 'data' => ['keys' => $keys, 'new_balance' => $newBalance]]);
     $conn->close();
 }
 
@@ -1033,6 +1569,7 @@ function loadSystemKeys($role) {
     }
     
     $conn = connectDB();
+    ensureSystemKeysTable($conn);
     $sql = "SELECT key_string, name, created_by_id, status FROM system_keys ORDER BY created_at DESC";
     $result = $conn->query($sql);
     
@@ -1058,8 +1595,21 @@ function generateSystemKey($user_id, $role, $input) {
     }
     
     $conn = connectDB();
-    $key_string = strtoupper(substr(bin2hex(random_bytes(16)), 0, 32));
-    $name = $input['name'] ?? 'SYSTEM';
+    ensureSystemKeysTable($conn);
+    $name = trim($input['name'] ?? 'SYSTEM');
+    $key_string = trim($input['key_string'] ?? '');
+    if ($key_string === '') {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Key string is required.']);
+        $conn->close();
+        return;
+    }
+    if (!preg_match('/^[A-Za-z0-9._\-]{6,64}$/', $key_string)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid key format. Use 6-64 chars [A-Za-z0-9._-].']);
+        $conn->close();
+        return;
+    }
 
     $sql = "INSERT INTO system_keys (key_string, name, created_by_id, status) 
             VALUES (?, ?, ?, 'Generated')";
@@ -1068,14 +1618,329 @@ function generateSystemKey($user_id, $role, $input) {
     
     if ($stmt->execute()) {
         http_response_code(201);
-        echo json_encode(['success' => true, 'message' => 'System key created.', 'data' => ['key_string' => $key_string]]);
+        echo json_encode(['success' => true, 'message' => 'System key added to pool.', 'data' => ['key_string' => $key_string]]);
     } else {
         http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'System key creation failed.']);
+        $msg = (strpos($conn->error ?? '', 'Duplicate') !== false || ($conn->errno ?? 0) === 1062) ? 'Duplicate key. Already exists.' : 'System key creation failed.';
+        echo json_encode(['success' => false, 'message' => $msg]);
     }
     $conn->close();
 }
 
+/**
+ * Owner bulk add keys into pool.
+ */
+function ownerBulkAddKeys($user_id, $role, $keys, $name, $bucket = null, $durationOverride = null) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    if (!is_array($keys) || count($keys) === 0) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'No keys provided.']);
+        return;
+    }
+    $conn = connectDB();
+    ensureSystemKeysTable($conn);
+    $stmt = $conn->prepare("INSERT INTO system_keys (key_string, name, created_by_id, status, duration, bucket) VALUES (?, ?, ?, 'Generated', ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), duration=VALUES(duration), bucket=VALUES(bucket)");
+    if (!$stmt) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Preparation failed.']);
+        $conn->close();
+        return;
+    }
+    $added = 0; $skipped = 0;
+    $defaultDuration = null; // optional default duration
+    if (is_string($durationOverride)) {
+        $d = trim($durationOverride);
+        if ($d === '' || preg_match('/^(h:\\d{1,5}|d:\\d{1,5})$/', $d)) { $defaultDuration = $d ?: null; }
+    }
+    $bucketClean = null;
+    if (is_string($bucket) && preg_match('/^[A-Za-z0-9._\-]{1,64}$/', $bucket)) { $bucketClean = $bucket; }
+    foreach ($keys as $k) {
+        $key = trim($k);
+        if ($key === '' || !preg_match('/^[A-Za-z0-9._\-]{6,64}$/', $key)) { $skipped++; continue; }
+        $dur = $defaultDuration;
+        $stmt->bind_param("sssss", $key, $name, $user_id, $dur, $bucketClean);
+        if ($stmt->execute()) { $added++; } else { $skipped++; }
+    }
+    echo json_encode(['success' => true, 'data' => ['added' => $added, 'skipped' => $skipped]]);
+    $conn->close();
+}
+
+/**
+ * Get pricing table (admin/owner).
+ */
+function getPricing($role) {
+    if (!checkRole($role, 'user')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    ensurePricingTable($conn);
+    // Use already-parsed global input so we don't re-read php://input
+    global $input;
+    $full = !empty($input['full']) && checkRole($role, 'owner');
+    $res = $conn->query("SELECT bucket, duration_id, price, price_user, price_reseller, price_admin FROM pricing ORDER BY bucket, duration_id");
+    $pricing = [];
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $bucketKey = $row['bucket'] ?: '_default_';
+            if (!isset($pricing[$bucketKey])) { $pricing[$bucketKey] = []; }
+            if ($full) {
+                $pricing[$bucketKey][$row['duration_id']] = [
+                    'user' => isset($row['price_user']) ? (float)$row['price_user'] : (isset($row['price']) ? (float)$row['price'] : 0.0),
+                    'reseller' => isset($row['price_reseller']) ? (float)$row['price_reseller'] : (isset($row['price']) ? (float)$row['price'] : 0.0),
+                    'admin' => isset($row['price_admin']) ? (float)$row['price_admin'] : (isset($row['price']) ? (float)$row['price'] : 0.0),
+                ];
+            } else {
+                // Role-appropriate single price
+                $tier = ($role === 'reseller') ? 'price_reseller' : (($role === 'admin' || $role === 'owner') ? 'price_admin' : 'price_user');
+                $val = $row[$tier] ?? null;
+                if ($val === null || (float)$val <= 0) { $val = $row['price'] ?? 0; }
+                $pricing[$bucketKey][$row['duration_id']] = (float)$val;
+            }
+        }
+    }
+    echo json_encode(['success' => true, 'data' => $pricing]);
+    $conn->close();
+}
+
+/**
+ * Returns list of available buckets/products and their durations for UI building.
+ */
+function getCatalog($role) {
+    if (!checkRole($role, 'user')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Authorization required.']);
+        return;
+    }
+    $conn = connectDB();
+    ensurePricingTable($conn);
+    $res = $conn->query("SELECT bucket, duration_id FROM pricing ORDER BY bucket, duration_id");
+    $catalog = [];
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $b = $row['bucket'] ?: '_default_';
+            if (!isset($catalog[$b])) { $catalog[$b] = []; }
+            $catalog[$b][] = $row['duration_id'];
+        }
+    }
+    echo json_encode(['success' => true, 'data' => $catalog]);
+    $conn->close();
+}
+
+/**
+ * Owner update pricing.
+ */
+function ownerUpdatePricing($user_id, $role, $pricing) {
+    if (!checkRole($role, 'owner')) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Owner authorization required.']);
+        return;
+    }
+    if (!is_array($pricing)) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Invalid pricing payload.']); return; }
+    if (empty($pricing)) { echo json_encode(['success' => true]); return; }
+    $conn = connectDB();
+    ensurePricingTable($conn);
+    // We'll upsert role-tiered prices; accept two shapes:
+    // 1) { bucket: { durationId: number } }
+    // 2) { bucket: { durationId: { user: n1, reseller: n2, admin: n3 } } }
+    $stmt = $conn->prepare("INSERT INTO pricing (bucket, duration_id, price, price_user, price_reseller, price_admin) VALUES (?, ?, ?, ?, ?, ?) 
+        ON DUPLICATE KEY UPDATE 
+            price = COALESCE(VALUES(price), price),
+            price_user = VALUES(price_user),
+            price_reseller = VALUES(price_reseller),
+            price_admin = VALUES(price_admin)");
+    if (!$stmt) { http_response_code(500); echo json_encode(['success' => false, 'message' => 'Preparation failed.']); $conn->close(); return; }
+    foreach ($pricing as $bucketName => $bucketPrices) {
+        $b = ($bucketName === '_default_' ? null : (string)$bucketName);
+        if (!is_array($bucketPrices)) { continue; }
+        foreach ($bucketPrices as $durationId => $val) {
+            $did = (string)$durationId;
+            if ($did === '') { continue; }
+            $base = null; $pu = null; $pr = null; $pa = null;
+            if (is_array($val)) {
+                $pu = isset($val['user']) ? (float)$val['user'] : null;
+                $pr = isset($val['reseller']) ? (float)$val['reseller'] : null;
+                $pa = isset($val['admin']) ? (float)$val['admin'] : null;
+                // Optional base price fallback
+                $base = isset($val['price']) ? (float)$val['price'] : null;
+            } else {
+                $base = (float)$val;
+            }
+            // Ensure NOT NULL base 'price' column gets a value
+            if ($base === null) {
+                if ($pu !== null) { $base = $pu; }
+                elseif ($pr !== null) { $base = $pr; }
+                elseif ($pa !== null) { $base = $pa; }
+                else { $base = 0.00; }
+            }
+            // Bind as strings to allow NULLs when needed for tier columns; MySQL will cast DECIMAL
+            $puParam = ($pu === null) ? null : (string)$pu;
+            $prParam = ($pr === null) ? null : (string)$pr;
+            $paParam = ($pa === null) ? null : (string)$pa;
+            $baseParam = (string)$base;
+            $stmt->bind_param("ssssss", $b, $did, $baseParam, $puParam, $prParam, $paParam);
+            $stmt->execute();
+        }
+    }
+    echo json_encode(['success' => true]);
+    $conn->close();
+}
+
+/** New: Owner Product Management **/
+function ownerListProducts($user_id, $role) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    $conn = connectDB();
+    $res = $conn->query("SELECT id, name, status, created_at FROM products ORDER BY name");
+    $rows = [];
+    if ($res) { while ($r = $res->fetch_assoc()) { $rows[] = $r; } }
+    echo json_encode(['success'=>true, 'data'=>$rows]);
+    $conn->close();
+}
+
+function ownerCreateProduct($user_id, $role, $name) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($name === '' || !preg_match('/^[A-Za-z0-9._\-]{1,64}$/', $name)) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid product name.']); return; }
+    $conn = connectDB();
+    $stmt = $conn->prepare("INSERT INTO products (name) VALUES (?)");
+    $stmt->bind_param("s", $name);
+    if ($stmt->execute()) { echo json_encode(['success'=>true, 'data'=>['id'=>$conn->insert_id]]); } else { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Create failed.']); }
+    $conn->close();
+}
+
+function ownerUpdateProduct($user_id, $role, $id, $name, $status) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($id <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid product id.']); return; }
+    if ($name !== '' && !preg_match('/^[A-Za-z0-9._\-]{1,64}$/', $name)) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid product name.']); return; }
+    if ($status !== '' && !in_array($status, ['active','inactive'], true)) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid status.']); return; }
+    $conn = connectDB();
+    if ($name !== '' && $status !== '') {
+        $stmt = $conn->prepare("UPDATE products SET name = ?, status = ? WHERE id = ?");
+        $stmt->bind_param("ssi", $name, $status, $id);
+    } elseif ($name !== '') {
+        $stmt = $conn->prepare("UPDATE products SET name = ? WHERE id = ?");
+        $stmt->bind_param("si", $name, $id);
+    } else {
+        $stmt = $conn->prepare("UPDATE products SET status = ? WHERE id = ?");
+        $stmt->bind_param("si", $status, $id);
+    }
+    if ($stmt->execute() && $stmt->affected_rows >= 0) { echo json_encode(['success'=>true]); } else { http_response_code(404); echo json_encode(['success'=>false,'message'=>'Update failed.']); }
+    $conn->close();
+}
+
+function ownerDeleteProduct($user_id, $role, $id) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($id <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid product id.']); return; }
+    $conn = connectDB();
+    $stmt = $conn->prepare("DELETE FROM products WHERE id = ?");
+    $stmt->bind_param("i", $id);
+    if ($stmt->execute() && $stmt->affected_rows > 0) { echo json_encode(['success'=>true]); } else { http_response_code(404); echo json_encode(['success'=>false,'message'=>'Delete failed.']); }
+    $conn->close();
+}
+
+function ownerListDurations($user_id, $role, $product_id) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($product_id <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid product id.']); return; }
+    $conn = connectDB();
+    $stmt = $conn->prepare("SELECT id, duration_name, price FROM durations WHERE product_id = ? ORDER BY id");
+    $stmt->bind_param("i", $product_id);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $rows = [];
+    while ($r = $res->fetch_assoc()) { $rows[] = $r; }
+    echo json_encode(['success'=>true, 'data'=>$rows]);
+    $conn->close();
+}
+
+function ownerUpsertDuration($user_id, $role, $product_id, $duration_name, $price) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($product_id <= 0 || $duration_name === '' || $price <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid payload.']); return; }
+    $conn = connectDB();
+    $stmt = $conn->prepare("INSERT INTO durations (product_id, duration_name, price) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE price = VALUES(price)");
+    $stmt->bind_param("isd", $product_id, $duration_name, $price);
+    if ($stmt->execute()) { echo json_encode(['success'=>true]); } else { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Upsert failed.']); }
+    $conn->close();
+}
+
+function ownerDeleteDuration($user_id, $role, $id) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($id <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid id.']); return; }
+    $conn = connectDB();
+    $stmt = $conn->prepare("DELETE FROM durations WHERE id = ?");
+    $stmt->bind_param("i", $id);
+    if ($stmt->execute() && $stmt->affected_rows > 0) { echo json_encode(['success'=>true]); } else { http_response_code(404); echo json_encode(['success'=>false,'message'=>'Delete failed.']); }
+    $conn->close();
+}
+
+function ownerBulkAddKeysPool($user_id, $role, $product_id, $keys, $default_duration) {
+    if (!checkRole($role, 'owner')) { http_response_code(403); echo json_encode(['success'=>false,'message'=>'Owner authorization required.']); return; }
+    if ($product_id <= 0 || !is_array($keys) || count($keys) === 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid payload.']); return; }
+    $conn = connectDB();
+    $stmt = $conn->prepare("INSERT INTO keys_pool (product_id, key_value, default_duration, is_used) VALUES (?, ?, ?, 0) ON DUPLICATE KEY UPDATE default_duration=VALUES(default_duration)");
+    if (!$stmt) { http_response_code(500); echo json_encode(['success'=>false,'message'=>'Preparation failed.']); $conn->close(); return; }
+    $added=0; $skipped=0;
+    foreach ($keys as $k) {
+        $kv = trim($k);
+        if ($kv === '' || !preg_match('/^[A-Za-z0-9._\-]{6,64}$/', $kv)) { $skipped++; continue; }
+        $dur = ($default_duration && preg_match('/^(opt\d+|h:\\d{1,5}|d:\\d{1,5})$/', $default_duration)) ? $default_duration : NULL;
+        $stmt->bind_param("iss", $product_id, $kv, $dur);
+        if ($stmt->execute()) { $added++; } else { $skipped++; }
+    }
+    echo json_encode(['success'=>true, 'data'=>['added'=>$added,'skipped'=>$skipped]]);
+    $conn->close();
+}
+
+/** New: User-facing listing **/
+function listProducts($role) {
+    if (!checkRole($role, 'user')) { http_response_code(403); echo json_encode(['success'=>false,'message' => 'Authorization required.']); return; }
+    $conn = connectDB();
+    $res = $conn->query("SELECT id, name FROM products WHERE status='active' ORDER BY name");
+    $rows = [];
+    if ($res) { while ($r = $res->fetch_assoc()) { $rows[] = $r; } }
+    echo json_encode(['success'=>true, 'data'=>$rows]);
+    $conn->close();
+}
+
+function listDurations($role, $product_id) {
+    if (!checkRole($role, 'user')) { http_response_code(403); echo json_encode(['success'=>false,'message' => 'Authorization required.']); return; }
+    if ($product_id <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message' => 'Invalid product id.']); return; }
+    $conn = connectDB();
+    // Fetch product name for role-tiered pricing overlay
+    $pname = null;
+    $p = $conn->prepare("SELECT name FROM products WHERE id = ? LIMIT 1");
+    if ($p) { $p->bind_param("i", $product_id); $p->execute(); $prow = $p->get_result()->fetch_assoc(); $p->close(); $pname = $prow['name'] ?? null; }
+
+    $stmt = $conn->prepare("SELECT id, duration_name, price FROM durations WHERE product_id = ? ORDER BY id");
+    $stmt->bind_param("i", $product_id);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $rows = [];
+    ensurePricingTable($conn);
+    $tierCol = ($role === 'reseller') ? 'price_reseller' : (($role === 'admin' || $role === 'owner') ? 'price_admin' : 'price_user');
+    while ($r = $res->fetch_assoc()) {
+        // Overlay role-tiered pricing if present for this product name
+        if ($pname) {
+            $q = $conn->prepare("SELECT price, $tierCol AS tier_price FROM pricing WHERE bucket = ? AND duration_id = ? LIMIT 1");
+            if ($q) {
+                $q->bind_param("ss", $pname, $r['duration_name']);
+                $q->execute();
+                $pr = $q->get_result()->fetch_assoc();
+                $q->close();
+                if ($pr) {
+                    $eff = isset($pr['tier_price']) && (float)$pr['tier_price'] > 0 ? (float)$pr['tier_price'] : (float)($pr['price'] ?? 0);
+                    if ($eff > 0) { $r['price'] = $eff; }
+                }
+            }
+        }
+        $rows[] = $r;
+    }
+    echo json_encode(['success'=>true, 'data'=>$rows]);
+    $conn->close();
+}
 /**
  * Owner: Generate API key with limit/amount for external automation.
  */
@@ -1163,7 +2028,18 @@ function apiCreateLicense($input) {
         $conn->close();
         return;
     }
-    $key_string = bin2hex(random_bytes(11));
+    // Claim a pre-added key from the pool managed by owner
+    $claimed = claimPreAddedKey($conn);
+    if (!$claimed) {
+        $conn->rollback();
+        http_response_code(409);
+        echo json_encode(['success' => false, 'message' => 'No pre-added keys available. Contact owner.']);
+        $conn->close();
+        return;
+    }
+    $key_string = $claimed['key_string'];
+    // If owner attached duration to the key, prefer it
+    $duration_id = $claimed['duration'] ?: $duration_id;
     $expires = NULL;
     $sql = "INSERT INTO licenses (key_string, game_package, duration, max_devices, devices_used, status, creator_id, expires) VALUES (?, ?, ?, ?, 0, 'Issued', ?, ?)";
     $stmt = $conn->prepare($sql);

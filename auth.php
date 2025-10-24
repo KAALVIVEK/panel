@@ -18,6 +18,37 @@ define('DB_USER', 'ezyro_40038768');
 define('DB_PASS', '13579780');
 define('DB_NAME', 'ezyro_40038768_vivek');
 
+// --- Core table guards for auth flows ---
+function ensureAuthTables($conn) {
+    // users
+    $conn->query("CREATE TABLE IF NOT EXISTS users (
+        user_id VARCHAR(36) NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        name VARCHAR(100) NOT NULL DEFAULT 'Ztrax User',
+        role ENUM('user','reseller','admin','owner') NOT NULL DEFAULT 'user',
+        balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        referred_by_id VARCHAR(36) NULL,
+        status ENUM('Active','Blocked') NOT NULL DEFAULT 'Active',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id),
+        UNIQUE KEY uniq_users_email (email),
+        KEY idx_users_referred_by (referred_by_id),
+        KEY idx_users_role (role)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    // referrals
+    $conn->query("CREATE TABLE IF NOT EXISTS referrals (
+        code CHAR(8) NOT NULL,
+        initial_balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        max_role ENUM('user','reseller','admin') NOT NULL DEFAULT 'user',
+        creator_id VARCHAR(36) NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (code),
+        KEY idx_referrals_creator (creator_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
 // --- 2. Input Handling and Routing ---
 $input_json = file_get_contents('php://input');
 $input_data = json_decode($input_json, true);
@@ -75,10 +106,6 @@ function handleRegistration($conn, $data) {
         http_response_code(400);
         return array("success" => false, "message" => "Invalid email or password.");
     }
-    if (empty($referral_code)) {
-        http_response_code(400);
-        return array("success" => false, "message" => "Referral code is required for signup.");
-    }
     if (strlen($password) < 8) {
         http_response_code(400);
         return array("success" => false, "message" => "Password must be at least 8 characters.");
@@ -95,21 +122,28 @@ function handleRegistration($conn, $data) {
     }
     $stmt->close();
 
-    $referral_data = ['initial_balance' => 0.00, 'max_role' => 'user', 'creator_id' => null];
-    $stmt = $conn->prepare("SELECT initial_balance, max_role, creator_id FROM referrals WHERE code = ?");
-    $stmt->bind_param("s", $referral_code);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    if ($result->num_rows !== 1) {
-        http_response_code(400);
-        return array("success" => false, "message" => "Invalid referral code.");
+    // Defaults for no-referral signups
+    $final_balance = 0.00;
+    $final_role = 'user';
+    $referred_by_id = null;
+
+    // If a referral code was provided, validate and apply its attributes
+    if (!empty($referral_code)) {
+        $stmt = $conn->prepare("SELECT initial_balance, max_role, creator_id FROM referrals WHERE code = ?");
+        $stmt->bind_param("s", $referral_code);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($result->num_rows !== 1) {
+            http_response_code(400);
+            return array("success" => false, "message" => "Invalid referral code.");
+        }
+        $referral_data = $result->fetch_assoc();
+        $stmt->close();
+
+        $final_balance = (float)$referral_data['initial_balance'];
+        $final_role = $referral_data['max_role'];
+        $referred_by_id = $referral_data['creator_id'];
     }
-    $referral_data = $result->fetch_assoc();
-    $stmt->close();
-    
-    $final_balance = $referral_data['initial_balance'];
-    $final_role = $referral_data['max_role'];
-    $referred_by_id = $referral_data['creator_id'];
     $final_user_id = uniqid('UID-', true);
 
     $password_hash = password_hash($password, PASSWORD_DEFAULT);

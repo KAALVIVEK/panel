@@ -20,16 +20,285 @@
             { name: 'Call of Duty Mobile', package: 'com.activision.callofduty.shooter' }
         ];
 
-        // Key Data Structure for License Generation
-        const LICENSE_OPTIONS = [
-            { id: 'opt1', duration: '5 Hour', days: 0.208, price: 30.00 },
-            { id: 'opt2', duration: '1 Day', days: 1, price: 60.00 },
-            { id: 'opt3', duration: '3 Days', days: 3, price: 150.00 },
-            { id: 'opt4', duration: '7 Days', days: 7, price: 250.00 },
-            { id: 'opt5', duration: '15 Days', days: 15, price: 400.00 },
-            { id: 'opt6', duration: '30 Days', days: 30, price: 600.00 },
-            { id: 'opt7', duration: '60 Days', days: 60, price: 800.00 },
-        ];
+        // Pricing data structure loaded from backend: { bucketName: { durationId: price|{user,reseller,admin} } }
+        let PRICING = {};
+        let PRICING_SELECTED_BUCKET = '_default_';
+        const LICENSE_OPTIONS = []; // will be built from PRICING for current bucket
+        let currentBucket = '';
+        async function syncPricing(full = false) {
+            const prices = await fetchAPI('get_pricing', full ? { full: true } : {});
+            if (!prices) return;
+            PRICING = prices;
+        }
+
+        // --- Owner Product Management (Products, Durations, Keys Pool) ---
+        async function ownerApi(action, payload = {}) {
+            return await fetchAPI(action, payload);
+        }
+
+        async function renderOwnerProductSection() {
+            const container = document.getElementById('owner-product-mgmt');
+            if (!container || !window.checkRole('owner')) return;
+            const [products, _] = await Promise.all([
+                ownerApi('owner_list_products')
+            ]);
+            const rows = (products || []).map(p => `
+                <tr class="text-sm text-high-contrast">
+                    <td class="py-2 text-white">${p.id}</td>
+                    <td class="py-2">
+                        <input value="${p.name}" class="bg-white/10 border border-primary/30 text-white p-1 rounded" onchange="updateProductName(${p.id}, this.value)">
+                    </td>
+                    <td class="py-2">
+                        <select class="bg-white/10 border border-primary/30 text-white p-1 rounded" onchange="updateProductStatus(${p.id}, this.value)">
+                            <option value="active" ${p.status==='active'?'selected':''}>active</option>
+                            <option value="inactive" ${p.status==='inactive'?'selected':''}>inactive</option>
+                        </select>
+                    </td>
+                    <td class="py-2 text-right">
+                        <button class="text-red-400 px-2 py-1 bg-red-700/40 rounded" onclick="deleteProduct(${p.id})">Delete</button>
+                        <button class="text-primary px-2 py-1 bg-primary/20 rounded ml-2" onclick="openDurations(${p.id}, '${p.name.replace(/'/g, "&#39;")}')">Durations</button>
+                        <button class="text-cyber-pink px-2 py-1 bg-pink-700/30 rounded ml-2" onclick="openKeysPool(${p.id}, '${p.name.replace(/'/g, "&#39;")}')">Keys Pool</button>
+                    </td>
+                </tr>
+            `).join('');
+            container.innerHTML = `
+                <div class="widget-card rounded-xl p-6">
+                    <h3 class="text-xl font-semibold text-primary mb-4 flex items-center">
+                        <svg data-lucide="package" class="w-5 h-5 mr-2"></svg>
+                        Product Management
+                    </h3>
+                    <div class="flex gap-2 mb-3">
+                        <input id="new-product-name" placeholder="New product name" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                        <button class="glowing-button px-4 py-2 rounded" onclick="createProduct()">Add</button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-700/50">
+                            <thead>
+                                <tr class="text-xs uppercase tracking-wider text-gray-500 text-high-contrast border-b border-primary/50">
+                                    <th class="py-2 text-left">ID</th>
+                                    <th class="py-2 text-left">Name</th>
+                                    <th class="py-2 text-left">Status</th>
+                                    <th class="py-2 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="owner-products-table" class="divide-y divide-gray-800">${rows || ''}</tbody>
+                        </table>
+                        ${!rows ? '<div class="text-gray-500 text-sm mt-3">No products yet.</div>' : ''}
+                    </div>
+                </div>
+
+                <div id="owner-product-modals"></div>
+            `;
+            if (typeof lucide !== 'undefined' && lucide.createIcons) { lucide.createIcons(); }
+        }
+
+        window.createProduct = async () => {
+            const name = (document.getElementById('new-product-name')?.value || '').trim();
+            if (!name) { showMessage('Enter product name.', 'error'); return; }
+            const ok = await ownerApi('owner_create_product', { name });
+            if (ok) {
+                showMessage('Product created.', 'success');
+                document.getElementById('new-product-name').value = '';
+                renderOwnerProductSection();
+                // Also refresh Create License dropdowns
+                await renderProductOptions();
+                await window.handleGameChange();
+            }
+        };
+        window.updateProductName = async (id, name) => {
+            if (!name) { showMessage('Name cannot be empty.', 'error'); return; }
+            const ok = await ownerApi('owner_update_product', { id, name });
+            if (ok) {
+                showMessage('Product updated.', 'success');
+                await renderProductOptions();
+                await window.handleGameChange();
+            }
+        };
+        window.updateProductStatus = async (id, status) => {
+            const ok = await ownerApi('owner_update_product', { id, status });
+            if (ok) {
+                showMessage('Status updated.', 'success');
+                await renderProductOptions();
+                await window.handleGameChange();
+            }
+        };
+        window.deleteProduct = async (id) => {
+            if (!confirm('Delete this product? Durations and keys pool will also be removed.')) return;
+            const ok = await ownerApi('owner_delete_product', { id });
+            if (ok) {
+                showMessage('Product deleted.', 'success');
+                renderOwnerProductSection();
+                await renderProductOptions();
+                await window.handleGameChange();
+            }
+        };
+
+        function modalTemplate(title, bodyHtml) {
+            return `
+                <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="closeOwnerModal(event)">
+                    <div class="bg-gray-900 border border-primary/40 rounded-xl max-w-2xl w-full p-4" onclick="event.stopPropagation()">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="text-white text-lg font-semibold text-high-contrast">${title}</div>
+                            <button class="text-gray-400 hover:text-white" onclick="closeOwnerModal()">✕</button>
+                        </div>
+                        <div>${bodyHtml}</div>
+                    </div>
+                </div>
+            `;
+        }
+        window.closeOwnerModal = () => {
+            const mod = document.getElementById('owner-product-modals');
+            if (mod) mod.innerHTML = '';
+        };
+
+        window.openKeysPool = async (productId, productName) => {
+            const body = `
+                <div class="space-y-3">
+                    <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Add Keys (one per line)</label>
+                    <textarea id="keys-pool-input" rows="8" class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg"></textarea>
+                    <div class="flex gap-2">
+                        <input id="keys-pool-default-duration" placeholder="Default duration (optional)" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                        <button class="glowing-button px-4 py-2 rounded" onclick="addKeysPool(${productId})">Add</button>
+                    </div>
+                </div>`;
+            document.getElementById('owner-product-modals').innerHTML = modalTemplate(`Keys Pool - ${productName}`, body);
+        };
+        window.addKeysPool = async (productId) => {
+            const raw = document.getElementById('keys-pool-input')?.value || '';
+            const keys = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            const default_duration = (document.getElementById('keys-pool-default-duration')?.value || '').trim();
+            if (keys.length === 0) { showMessage('No keys provided.', 'error'); return; }
+            const ok = await ownerApi('owner_bulk_add_keys_pool', { product_id: productId, keys, default_duration });
+            if (ok) { showMessage('Keys added to pool.', 'success'); closeOwnerModal(); }
+        };
+
+        window.openDurations = async (productId, productName) => {
+            const rows = await ownerApi('owner_list_durations', { product_id: productId }) || [];
+            const safeName = (productName || '').replace(/'/g, "&#39;");
+            const body = `
+                <div class="space-y-3">
+                    <div class="flex flex-col gap-2">
+                        <div class="flex gap-2">
+                            <input id="new-duration-name" placeholder="Duration (e.g., d:1)" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                            <input id="new-duration-price" placeholder="User Price" type="number" min="0.01" step="0.01" class="w-40 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                        </div>
+                        <div class="flex gap-2">
+                            <input id="new-duration-price-rao" placeholder="Reseller/Admin/Owner Price" type="number" min="0.01" step="0.01" class="w-56 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                            <button class="glowing-button px-4 py-2 rounded" onclick="addDuration(${productId}, '${safeName}')">Add</button>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-700/50">
+                            <thead>
+                                <tr class="text-xs uppercase tracking-wider text-gray-500 text-high-contrast border-b border-primary/50">
+                                    <th class="py-2 text-left">ID</th>
+                                    <th class="py-2 text-left">Duration</th>
+                                    <th class="py-2 text-left">User Price</th>
+                                    <th class="py-2 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="owner-durations-table" class="divide-y divide-gray-800">
+                                ${rows.map(r => `
+                                    <tr class="text-sm text-high-contrast">
+                                        <td class="py-2 text-white">${r.id}</td>
+                                        <td class="py-2">${r.duration_name}</td>
+                                        <td class="py-2">₹${parseFloat(r.price).toFixed(2)}</td>
+                                        <td class="py-2 text-right">
+                                            <button class="text-red-400 px-2 py-1 bg-red-700/40 rounded" onclick="deleteDuration(${r.id}, ${productId}, '${safeName}')">Delete</button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>`;
+            document.getElementById('owner-product-modals').innerHTML = modalTemplate(`Durations - ${productName}`, body);
+        };
+        window.addDuration = async (productId, productName) => {
+            const name = (document.getElementById('new-duration-name')?.value || '').trim();
+            const userPrice = parseFloat(document.getElementById('new-duration-price')?.value || '0');
+            const raoPrice = parseFloat(document.getElementById('new-duration-price-rao')?.value || '0');
+            if (!name || !(userPrice > 0) || !(raoPrice > 0)) { showMessage('Enter duration, user price, and reseller/admin/owner price.', 'error'); return; }
+            const ok = await ownerApi('owner_upsert_duration', { product_id: productId, duration_name: name, price: userPrice });
+            if (ok) {
+                // Update tiered pricing for this product/duration
+                const payload = { pricing: {} };
+                payload.pricing[productName] = {};
+                payload.pricing[productName][name] = { user: userPrice, reseller: raoPrice, admin: raoPrice };
+                const pOk = await fetchAPI('owner_update_pricing', payload);
+                if (!pOk) { showMessage('Saved user price, but failed to update reseller/admin/owner price.', 'error'); }
+                showMessage('Duration and pricing saved.', 'success');
+                // clear inputs
+                const dn = document.getElementById('new-duration-name'); if (dn) dn.value = '';
+                const up = document.getElementById('new-duration-price'); if (up) up.value = '';
+                const rp = document.getElementById('new-duration-price-rao'); if (rp) rp.value = '';
+                openDurations(productId, productName);
+                // Refresh Create License duration dropdown if current product matches
+                const sel = document.getElementById('license-game');
+                if (sel && /^\d+$/.test(sel.value) && parseInt(sel.value, 10) === productId) {
+                    await syncPricing(true);
+                    await loadDurationsForProduct(productId);
+                    window.updateLicenseTotal();
+                }
+            }
+        };
+        window.deleteDuration = async (id, productId, productName) => {
+            const ok = await ownerApi('owner_delete_duration', { id });
+            if (ok) {
+                showMessage('Duration deleted.', 'success');
+                openDurations(productId, productName);
+                // Refresh Create License duration dropdown if current product matches
+                const sel = document.getElementById('license-game');
+                if (sel && /^\d+$/.test(sel.value) && parseInt(sel.value, 10) === productId) {
+                    await loadDurationsForProduct(productId);
+                    window.updateLicenseTotal();
+                }
+            }
+        };
+
+        window.openKeysPool = async (productId, productName) => {
+            const body = `
+                <div class="space-y-3">
+                    <label class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Add Keys (one per line)</label>
+                    <textarea id="keys-pool-input" rows="8" class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg"></textarea>
+                    <div class="flex gap-2">
+                        <input id="keys-pool-default-duration" placeholder="Default duration (optional)" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                        <button class="glowing-button px-4 py-2 rounded" onclick="addKeysPool(${productId})">Add</button>
+                    </div>
+                </div>`;
+            document.getElementById('owner-product-modals').innerHTML = modalTemplate(`Keys Pool - ${productName}`, body);
+        };
+        window.addKeysPool = async (productId) => {
+            const raw = document.getElementById('keys-pool-input')?.value || '';
+            const keys = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            const default_duration = (document.getElementById('keys-pool-default-duration')?.value || '').trim();
+            if (keys.length === 0) { showMessage('No keys provided.', 'error'); return; }
+            const ok = await ownerApi('owner_bulk_add_keys_pool', { product_id: productId, keys, default_duration });
+            if (ok) { showMessage('Keys added to pool.', 'success'); closeOwnerModal(); }
+        };
+        function setCurrentBucket(bucket) {
+            currentBucket = bucket || '_default_';
+            rebuildLicenseOptions();
+        }
+        function rebuildLicenseOptions() {
+            LICENSE_OPTIONS.length = 0;
+            const entries = PRICING[currentBucket] || {};
+            const pickByRole = (val) => {
+                if (val && typeof val === 'object') {
+                    if (window.userRole === 'reseller') return parseFloat(val.reseller || val.user || val.admin || 0);
+                    if (window.userRole === 'admin' || window.userRole === 'owner') return parseFloat(val.admin || val.reseller || val.user || 0);
+                    return parseFloat(val.user || val.reseller || val.admin || 0);
+                }
+                return parseFloat(val || '0');
+            };
+            Object.keys(entries).forEach(id => {
+                // Present id as readable label (e.g., opt1 or custom like h:10)
+                let label = id.startsWith('h:') ? `${id.slice(2)} Hour` : id.startsWith('d:') ? `${id.slice(2)} Day` : id.toUpperCase();
+                if (label.endsWith(' Day') && parseInt(id.slice(2),10) > 1) label += 's';
+                const price = pickByRole(entries[id]);
+                LICENSE_OPTIONS.push({ id, duration: label, days: null, price });
+            });
+        }
 
         
         function getQueryParams() {
@@ -117,6 +386,29 @@
             }
         }
 
+        // Add Balance (UPI QR) - opens new tab with QR page
+        window.createTopupOrder = () => {
+            const input = document.getElementById('topup-amount');
+            const amt = parseFloat(input?.value || '0');
+            if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
+            const orderId = 'ORDER_' + Date.now();
+            const url = `upi_qr.php?amount=${encodeURIComponent(String(amt))}&orderId=${encodeURIComponent(orderId)}`;
+            window.open(url, '_blank');
+            const msg = document.getElementById('topup-order-msg');
+            if (msg) msg.textContent = `Order created: ${orderId}. A new tab opened with the QR code.`;
+        };
+
+        window.createTopupOrder = async () => {
+            const amt = parseFloat(document.getElementById('topup-amount')?.value || '0');
+            const msg = document.getElementById('topup-order-msg');
+            if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
+            // Create UPI QR
+            // Open UPI QR page in a new tab for better UX
+            const orderId = 'ORDER_' + Date.now();
+            window.open(`upi_qr.php?amount=${encodeURIComponent(String(amt))}&orderId=${encodeURIComponent(orderId)}`,'_blank');
+            msg.textContent = `Order created: ${orderId}. A new tab was opened with the QR code.`;
+        };
+
         window.checkRole = (requiredRole) => {
             const role = window.userRole;
             if (requiredRole === 'user') return true;
@@ -189,18 +481,35 @@
 
         window.updateLicenseTotal = () => {
             const durationSelect = document.getElementById('license-duration');
-            const maxDevicesInput = document.getElementById('max-devices');
+            const productSel = document.getElementById('license-game');
+            const qtyInput = document.getElementById('license-quantity');
+            const selVal = (productSel && productSel.value) ? productSel.value : '';
+            const isProduct = /^\d+$/.test(selVal);
+            if (!isProduct) {
+                const bucket = selVal || '_default_';
+                setCurrentBucket(bucket);
+                renderDurationOptions();
+            }
             const selectedDuration = durationSelect.value ? LICENSE_OPTIONS.find(opt => opt.id === durationSelect.value) : null;
-            const maxDevices = parseInt(maxDevicesInput.value) || 1;
+            const quantity = Math.min(10, Math.max(1, parseInt(qtyInput?.value || '1', 10) || 1));
+            if (qtyInput && qtyInput.value !== String(quantity)) qtyInput.value = String(quantity);
             let totalCost = 0;
             if (selectedDuration) {
-                totalCost = selectedDuration.price * maxDevices;
+                totalCost = selectedDuration.price * quantity;
             }
-            document.getElementById('licenseTotalCost').textContent = totalCost.toFixed(2);
-            document.getElementById('licenseTotalCost').classList.toggle('text-red-400', totalCost > window.userBalance);
-            document.getElementById('licenseTotalCost').classList.toggle('text-green-400', totalCost <= window.userBalance);
-            document.getElementById('generateLicenseButton').disabled = totalCost === 0 || totalCost > window.userBalance;
-            document.getElementById('generateLicenseButton').classList.toggle('opacity-50', totalCost > window.userBalance);
+            const costEl = document.getElementById('licenseTotalCost');
+            costEl.textContent = totalCost.toFixed(2);
+            // flash animation
+            costEl.classList.remove('cost-flash');
+            void costEl.offsetWidth; // reflow to restart animation
+            costEl.classList.add('cost-flash');
+            const insufficient = totalCost > window.userBalance;
+            costEl.classList.toggle('text-red-400', insufficient);
+            costEl.classList.toggle('text-green-400', !insufficient);
+            document.getElementById('generateLicenseButton').disabled = totalCost === 0 || insufficient;
+            document.getElementById('generateLicenseButton').classList.toggle('opacity-50', insufficient || totalCost === 0);
+            const warn = document.getElementById('insufficientBalanceMsg');
+            if (warn) warn.classList.toggle('hidden', !insufficient);
         };
 
         window.loadInitialData = async () => {
@@ -237,12 +546,21 @@
             if (!window.checkRole('user')) { showMessage('Authorization required.', 'error'); return; }
             const totalCost = parseFloat(document.getElementById('licenseTotalCost').textContent);
             const maxDevices = parseInt(document.getElementById('max-devices').value) || 1;
-            const packageId = document.getElementById('license-game').value;
-            const durationId = document.getElementById('license-duration').value;
-            const selectedDuration = LICENSE_OPTIONS.find(opt => opt.id === durationId);
-            const gameName = GAMES.find(g => g.package === packageId).name;
+            const gameSel = document.getElementById('license-game');
+            const selVal = gameSel.value;
+            const isProduct = /^\d+$/.test(selVal);
+            const productId = isProduct ? parseInt(selVal, 10) : null;
+            const bucket = isProduct ? (gameSel.selectedOptions[0]?.dataset?.name || '_default_') : (selVal || '_default_');
+            // Use product display name as package id if product selected, else bucket name
+            const packageId = isProduct ? (gameSel.selectedOptions[0]?.dataset?.name || `product_${selVal}`) : selVal;
+            let durationId = document.getElementById('license-duration').value;
+            const customId = document.getElementById('custom-duration-id').value;
+            if (durationId === 'custom' && customId) { durationId = customId; }
+            const selectedDuration = LICENSE_OPTIONS.find(opt => opt.id === durationId) || { duration: durationId.startsWith('h:') ? `${durationId.slice(2)} Hours` : durationId.startsWith('d:') ? `${durationId.slice(2)} Days` : 'Custom' };
+            const quantity = Math.min(10, Math.max(1, parseInt(document.getElementById('license-quantity').value || '1', 10)));
+            const gameName = (gameSel.selectedOptions[0]?.dataset?.name) || (GAMES.find(g => g.package === packageId)?.name) || (gameSel.selectedOptions[0]?.textContent || 'Selected');
             showConfirmationDialog('Confirm License Generation',
-                `You are about to generate a **${gameName}** license key for **${selectedDuration.duration}** costing **₹${totalCost.toFixed(2)}**. Deduct balance?`,
+                `You are about to generate **${quantity}** ${gameName} key(s) for **${selectedDuration.duration}** totaling **₹${totalCost.toFixed(2)}**. Deduct balance?`,
                 async (confirmed) => {
                     if (!confirmed) {
                         showMessage('License generation cancelled.', 'error');
@@ -250,16 +568,22 @@
                     }
                     const newKeyData = await fetchAPI('create_license', {
                         package_id: packageId,
+                        bucket: (productId ? null : bucket),
+                        product_id: productId,
                         duration_id: durationId,
                         days: selectedDuration.days,
                         max_devices: maxDevices,
-                        cost: totalCost
+                        cost: totalCost,
+                        quantity: quantity
                     });
                     if (newKeyData) {
                         window.userBalance = newKeyData.new_balance;
                         window.updateLicenseTotal();
-                        window.copyToClipboard(newKeyData.key_string);
-                        showMessage(`License key generated and copied! New Balance: ₹${window.userBalance.toFixed(2)}.`, 'success');
+                        const keys = Array.isArray(newKeyData.keys) ? newKeyData.keys : (newKeyData.key_string ? [newKeyData.key_string] : []);
+                        if (keys.length) {
+                            window.copyToClipboard(keys.join('\n'));
+                        }
+                        showMessage(`${keys.length || 1} key(s) generated. New Balance: ₹${window.userBalance.toFixed(2)}.`, 'success');
                         displayRegisteredLicenses();
                         window.changeDashboardView('licenses');
                     }
@@ -461,12 +785,18 @@
             }
         };
 
-        window.generateSystemKey = () => {
+        window.generateSystemKey = async () => {
             if (!window.checkRole('admin')) { showMessage('Admin/Owner authorization required to generate system keys.', 'error'); return; }
             const keyName = document.getElementById('system-key-name').value;
             if (!keyName) { showMessage('Please enter a key designation.', 'error'); return; }
-            showMessage(`Generating system key for ${keyName}. (API call stub)`, 'success');
-            displaySystemKeys();
+            const keyValue = prompt('Enter pre-added key string (6-64 chars [A-Za-z0-9._-]):', '') || '';
+            if (!keyValue) { showMessage('Key string required.', 'error'); return; }
+            const data = await fetchAPI('generate_system_key', { name: keyName, key_string: keyValue });
+            if (data && data.key_string) {
+                copyToClipboard(data.key_string);
+                showMessage('System key added to pool and copied.', 'success');
+                displaySystemKeys();
+            }
         };
 
         window.generateOwnerApiKey = async () => {
@@ -478,6 +808,153 @@
                 copyToClipboard(data.api_key);
                 showMessage(`API Key generated and copied. Amount: ₹${data.amount.toFixed(2)}`, 'success');
             }
+        };
+
+        window.ownerBulkAddKeys = async () => {
+            if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
+            const bucket = (document.getElementById('owner-keys-bucket').value || '').trim();
+            const raw = (document.getElementById('owner-keys-text').value || '');
+            const keys = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+            const duration = (document.getElementById('owner-keys-duration').value || '').trim();
+            if (bucket === '') { showMessage('Please enter product/bucket name.', 'error'); return; }
+            if (keys.length === 0) { showMessage('No keys to add.', 'error'); return; }
+            const res = await fetchAPI('owner_bulk_add_keys', { name: bucket, keys, duration, bucket });
+            if (res && typeof res.added !== 'undefined') {
+                showMessage(`Added ${res.added}, skipped ${res.skipped}.`, 'success');
+                document.getElementById('owner-keys-text').value = '';
+                document.getElementById('owner-keys-duration').value = '';
+                document.getElementById('owner-keys-bucket').value = '';
+                displaySystemKeys();
+            }
+        };
+
+        async function renderPricingEditor() {
+            const wrap = document.getElementById('pricing-editor');
+            if (!wrap) return;
+            const pricing = await fetchAPI('get_pricing', { full: true });
+            if (!pricing) return;
+            PRICING = pricing;
+            // Header with bucket selector and new-bucket input
+            const buckets = Object.keys(PRICING);
+            if (buckets.length === 0) { buckets.push('_default_'); }
+            if (!PRICING_SELECTED_BUCKET || !PRICING[PRICING_SELECTED_BUCKET]) {
+                PRICING_SELECTED_BUCKET = buckets[0] || '_default_';
+            }
+            const selector = `
+                <div class="flex items-center gap-2 mb-3">
+                    <label class="text-sm text-gray-400">Product/Bucket:</label>
+                    <select id="pricing-bucket-select" class="bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                        ${buckets.map(b => `<option value="${b}" ${b===PRICING_SELECTED_BUCKET?'selected':''}>${b}</option>`).join('')}
+                    </select>
+                    <input id="pricing-new-bucket" placeholder="Add new (e.g., ztrax)" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                    <button class="glowing-button px-3 py-2 rounded" onclick="addPricingBucket()">Add</button>
+                </div>`;
+            const bucket = PRICING_SELECTED_BUCKET;
+            const data = PRICING[bucket] || {};
+            const rows = Object.entries(data).map(([dur, tiers]) => {
+                    const user = (tiers && typeof tiers === 'object') ? (tiers.user ?? 0) : (parseFloat(tiers) || 0);
+                    const rao = (tiers && typeof tiers === 'object') ? (tiers.reseller ?? tiers.admin ?? tiers.user ?? 0) : (parseFloat(tiers) || 0);
+                    return `
+                    <div class="p-2 widget-card rounded">
+                        <div class="flex items-center justify-between">
+                            <span class="text-white">${dur}</span>
+                            <div class="grid grid-cols-2 gap-2">
+                                <input aria-label="User price" data-pricing-bucket="${bucket}" data-pricing-id="${dur}" data-tier="user" type="number" min="0.01" step="0.01" value="${parseFloat(user).toFixed(2)}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right" placeholder="User">
+                                <input aria-label="Reseller/Admin/Owner price" data-pricing-bucket="${bucket}" data-pricing-id="${dur}" data-tier="rao" type="number" min="0.01" step="0.01" value="${parseFloat(rao).toFixed(2)}" class="w-40 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right" placeholder="Reseller/Admin/Owner">
+                            </div>
+                        </div>
+                    </div>`;
+            }).join('');
+            wrap.innerHTML = selector + `
+                <div class="mb-4">
+                    <div class="text-sm text-cyber-pink font-semibold mb-2">${bucket === '_default_' ? 'Default' : bucket}</div>
+                    <div class="text-xs text-gray-400 mb-1">Set User price, and a single price for Reseller/Admin/Owner</div>
+                    ${rows || '<div class="text-gray-500 text-sm">No durations set yet.</div>'}
+                    <div class="flex items-center gap-2 mt-2">
+                        <input placeholder="Duration (e.g., d:1 or h:10)" data-new-dur-bucket="${bucket}" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                        <input placeholder="User" type="number" min="0.01" step="0.01" data-new-dur-price-user-bucket="${bucket}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                        <input placeholder="Reseller/Admin/Owner" type="number" min="0.01" step="0.01" data-new-dur-price-rao-bucket="${bucket}" class="w-48 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right">
+                        <button class="glowing-button px-3 py-2 rounded" onclick="addPricingRow('${bucket}')">Add</button>
+                    </div>
+                </div>`;
+            const sel = document.getElementById('pricing-bucket-select');
+            if (sel) sel.onchange = () => { PRICING_SELECTED_BUCKET = sel.value || '_default_'; renderPricingEditor(); };
+        }
+
+        window.ownerSavePricing = async () => {
+            if (!window.checkRole('owner')) { showMessage('OWNER authorization required.', 'error'); return; }
+            const inputs = document.querySelectorAll('#pricing-editor [data-pricing-id]');
+            const pricing = {};
+            inputs.forEach(inp => {
+                const b = inp.getAttribute('data-pricing-bucket') || '_default_';
+                const id = (inp.getAttribute('data-pricing-id') || '').trim();
+                if (!id) return;
+                const val = parseFloat(inp.value || '0');
+                if (!pricing[b]) pricing[b] = {};
+                if (!pricing[b][id]) pricing[b][id] = {};
+                const tier = inp.getAttribute('data-tier');
+                if (tier === 'user') {
+                    pricing[b][id]['user'] = val;
+                } else if (tier === 'rao') {
+                    pricing[b][id]['reseller'] = val;
+                    pricing[b][id]['admin'] = val;
+                }
+            });
+            // Remove empty buckets or durations to avoid invalid payload
+            Object.keys(pricing).forEach(b => {
+                Object.keys(pricing[b]).forEach(id => {
+                    if (!pricing[b][id] || (!('user' in pricing[b][id]) && !('reseller' in pricing[b][id]) && !('admin' in pricing[b][id]))) {
+                        delete pricing[b][id];
+                    }
+                });
+                if (Object.keys(pricing[b]).length === 0) {
+                    delete pricing[b];
+                }
+            });
+            const ok = await fetchAPI('owner_update_pricing', { pricing });
+            if (ok) {
+                showMessage('Pricing saved.', 'success');
+                await syncPricing(true);
+                await renderProductOptions();
+                await window.handleGameChange();
+                window.updateLicenseTotal();
+            }
+        };
+
+        window.addPricingBucket = () => {
+            const input = document.getElementById('pricing-new-bucket');
+            const name = (input?.value || '').trim();
+            if (!name || !/^[A-Za-z0-9._\-]{1,64}$/.test(name)) { showMessage('Enter a valid product/bucket name.', 'error'); return; }
+            if (!PRICING[name]) PRICING[name] = {};
+            PRICING_SELECTED_BUCKET = name;
+            input.value = '';
+            renderPricingEditor();
+        };
+
+        window.addPricingRow = (bucket) => {
+            const durInput = document.querySelector(`[data-new-dur-bucket="${bucket}"]`);
+            const userInput = document.querySelector(`[data-new-dur-price-user-bucket="${bucket}"]`);
+            const raoInput = document.querySelector(`[data-new-dur-price-rao-bucket="${bucket}"]`);
+            if (!durInput || !userInput || !raoInput) return;
+            const dur = (durInput.value || '').trim();
+            const pu = parseFloat(userInput.value || '0');
+            const pra = parseFloat(raoInput.value || '0');
+            if (!dur || !(pu > 0) || !(pra > 0)) { showMessage('Enter duration and both prices.', 'error'); return; }
+            const container = durInput.closest('.mb-4');
+            const row = document.createElement('div');
+            row.className = 'p-2 widget-card rounded';
+            row.innerHTML = `
+                <div class="flex items-center justify-between">
+                    <span class="text-white">${dur}</span>
+                    <div class="grid grid-cols-2 gap-2">
+                        <input data-pricing-bucket="${bucket}" data-pricing-id="${dur}" data-tier="user" type="number" min="0.01" step="0.01" value="${pu.toFixed(2)}" class="w-28 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right" placeholder="User">
+                        <input data-pricing-bucket="${bucket}" data-pricing-id="${dur}" data-tier="rao" type="number" min="0.01" step="0.01" value="${pra.toFixed(2)}" class="w-40 bg-white/10 border border-primary/30 text-white p-2 rounded-lg text-right" placeholder="Reseller/Admin/Owner">
+                    </div>
+                </div>`;
+            container.insertBefore(row, container.querySelector('.flex.items-center.gap-2'));
+            durInput.value = '';
+            userInput.value = '';
+            raoInput.value = '';
         };
 
         window.resetUserLoginKey = (userId) => {
@@ -691,6 +1168,7 @@
                 { view: 'system-keys', icon: 'lock-keyhole', label: 'System Keys', role: 'admin' },
                 { view: 'create-referral', icon: 'user-plus', label: 'Create Referral', role: 'admin' },
                 { view: 'manage-users', icon: 'users', label: 'Manage Users', role: 'admin' },
+                { view: 'owner-keys', icon: 'key-round', label: 'Owner Keys & Pricing', role: 'owner' },
                 { view: 'settings', icon: 'settings', label: 'System Settings', role: 'user' },
             ];
 
@@ -733,8 +1211,16 @@
             if (activeContainer) activeContainer.classList.remove('hidden');
             if (window.dashboardView === 'manage-users') { displayManagedUsers(); }
             if (window.dashboardView === 'system-keys') { displaySystemKeys(); }
+            if (window.dashboardView === 'owner-keys') { renderOwnerProductSection(); }
             if (window.dashboardView === 'licenses') { displayRegisteredLicenses(); }
-            if (window.dashboardView === 'license-creator') { window.updateLicenseTotal(); }
+            if (window.dashboardView === 'license-creator') {
+                // Ensure latest pricing and durations are reflected
+                syncPricing().then(async () => {
+                    await renderProductOptions();
+                    await window.handleGameChange();
+                    window.updateLicenseTotal();
+                });
+            }
             if (window.dashboardView === 'create-referral') { displayReferralCodes(); }
             
             // Render settings data to update placeholder text
@@ -772,33 +1258,112 @@
             window.renderApp();
         };
 
-        function renderGameOptions() {
-            const gameSelect = document.getElementById('license-game');
-            if (!gameSelect) return;
-            gameSelect.innerHTML = GAMES.map((game, index) => `
-                <option value="${game.package}" ${index === 0 ? 'selected' : ''}>
-                    ${game.name}
+        async function renderProductOptions() {
+            const sel = document.getElementById('license-game');
+            if (!sel) return;
+            // Try to load products from backend; fallback to pricing buckets
+            let products = await fetchAPI('list_products');
+            products = Array.isArray(products) ? products : [];
+            if (products.length > 0) {
+                sel.innerHTML = products.map((p, idx) => `
+                    <option value="${p.id}" data-name="${p.name}" ${idx === 0 ? 'selected' : ''}>${p.name}</option>
+                `).join('');
+                return;
+            }
+            const buckets = Object.keys(PRICING).filter(b => b !== '_default_');
+            const opts = buckets.length ? buckets : ['_default_'];
+            sel.innerHTML = opts.map((b, idx) => `
+                <option value="${b}" ${idx === 0 ? 'selected' : ''}>${b === '_default_' ? 'Default' : b}</option>
+            `).join('');
+        }
+
+        async function loadDurationsForProduct(productId) {
+            const durationSelect = document.getElementById('license-duration');
+            if (!durationSelect) return;
+            // Build LICENSE_OPTIONS from products->durations API
+            const rows = await fetchAPI('list_durations', { product_id: productId });
+            const list = Array.isArray(rows) ? rows : [];
+            LICENSE_OPTIONS.length = 0;
+            const toLabel = (id) => {
+                if (typeof id !== 'string') return String(id);
+                if (id.startsWith('h:')) {
+                    const n = parseInt(id.slice(2), 10); return `${n} Hour${n > 1 ? 's' : ''}`;
+                }
+                if (id.startsWith('d:')) {
+                    const n = parseInt(id.slice(2), 10); return `${n} Day${n > 1 ? 's' : ''}`;
+                }
+                return id.toUpperCase();
+            };
+            // Start from DB durations and then apply role-specific PRICING override if present
+            const gameSel = document.getElementById('license-game');
+            const productName = gameSel && gameSel.selectedOptions[0] ? (gameSel.selectedOptions[0].dataset.name || '') : '';
+            const rolePick = (v) => {
+                if (v && typeof v === 'object') {
+                    if (window.userRole === 'reseller') return parseFloat(v.reseller || v.user || v.admin || 0);
+                    if (window.userRole === 'admin' || window.userRole === 'owner') return parseFloat(v.admin || v.reseller || v.user || 0);
+                    return parseFloat(v.user || v.reseller || v.admin || 0);
+                }
+                return parseFloat(v || '0');
+            };
+            list.forEach(r => {
+                const id = r.duration_name || r.id || '';
+                if (!id) return;
+                let price = parseFloat(r.price || 0);
+                const override = productName && PRICING[productName] ? PRICING[productName][id] : undefined;
+                if (typeof override !== 'undefined') {
+                    const p = rolePick(override);
+                    if (p > 0) price = p;
+                }
+                if (!(price > 0)) return;
+                LICENSE_OPTIONS.push({ id, duration: toLabel(id), days: null, price });
+            });
+            // Render into the select
+            const optionsHtml = LICENSE_OPTIONS.map((option, index) => `
+                <option value="${option.id}" ${index === 0 ? 'selected' : ''}>
+                    ${option.duration} - ₹${option.price.toFixed(2)}/Device
                 </option>
             `).join('');
+            durationSelect.innerHTML = optionsHtml;
         }
 
         function renderDurationOptions() {
             const durationSelect = document.getElementById('license-duration');
             if (!durationSelect) return;
-            durationSelect.innerHTML = LICENSE_OPTIONS.map((option, index) => `
+            const optionsHtml = LICENSE_OPTIONS.map((option, index) => `
                 <option value="${option.id}" ${index === 0 ? 'selected' : ''}>
                     ${option.duration} - ₹${option.price.toFixed(2)}/Device
                 </option>
             `).join('');
+            durationSelect.innerHTML = optionsHtml;
         }
 
+        window.handleGameChange = async () => {
+            const sel = document.getElementById('license-game');
+            if (!sel) return;
+            const val = sel.value || '';
+            const isProduct = /^\d+$/.test(val);
+            if (isProduct) {
+                await loadDurationsForProduct(parseInt(val, 10));
+            } else {
+                // Fallback to pricing bucket-based durations
+                const bucket = val || '_default_';
+                setCurrentBucket(bucket);
+                renderDurationOptions();
+            }
+            window.updateLicenseTotal();
+        };
+
         document.addEventListener('DOMContentLoaded', () => {
-            renderGameOptions();
-            renderDurationOptions();
+            // Load pricing first, then render product list from it
             if (loadSession()) {
                 // Default to licenses view if none specified
                 window.dashboardView = 'licenses'; 
                 window.loadInitialData();
+                syncPricing().then(async () => {
+                    await renderProductOptions();
+                    await window.handleGameChange();
+                    window.updateLicenseTotal();
+                });
                 fetchAPI('get_service_status').then(data => {
                     const el = document.getElementById('svc-keygen');
                     if (el && data && typeof data.key_generation_enabled !== 'undefined') {
@@ -901,6 +1466,15 @@
             cursor: not-allowed;
             animation: none;
             box-shadow: none;
+        }
+        /* small flash when total updates */
+        .cost-flash {
+            animation: costFlash 200ms ease-in-out;
+        }
+        @keyframes costFlash {
+            0% { transform: scale(1); filter: brightness(1.2); }
+            50% { transform: scale(1.04); filter: brightness(1.6); }
+            100% { transform: scale(1); filter: brightness(1); }
         }
         .sidebar-link {
             transition: all 0.2s;
@@ -1310,6 +1884,15 @@
                         </div>
                 </section>
 
+                <section id="content-owner-keys" class="dashboard-content-section hidden">
+                    <h2 class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-primary/50 pb-2">
+                        Product Management</h2>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div id="owner-product-mgmt" class="lg:col-span-2"></div>
+                    </div>
+                </section>
+
                 <section id="content-create-referral" class="dashboard-content-section hidden">
                     <h2
                         class="text-3xl font-bold text-white mb-8 text-high-contrast border-b border-cyber-pink/50 pb-2">
@@ -1420,7 +2003,7 @@
                             <div>
                                 <label for="license-game"
                                     class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Games</label>
-                                <select id="license-game" required onchange="updateLicenseTotal()"
+                                <select id="license-game" required onchange="handleGameChange()"
                                     class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
                                     </select>
                             </div>
@@ -1429,9 +2012,8 @@
                                 <label for="max-devices"
                                     class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Max
                                     Devices</label>
-                                <input id="max-devices" type="number" value="1" min="1" required
-                                    oninput="updateLicenseTotal()"
-                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
+                                <input id="max-devices" type="number" value="1" min="1" max="1" required disabled
+                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg opacity-70 cursor-not-allowed">
                             </div>
 
                             <div>
@@ -1442,9 +2024,17 @@
                                     class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg focus:ring-cyber-pink focus:border-cyber-pink transition custom-select-bg">
                                     </select>
                             </div>
+                            <div>
+                                <label for="license-quantity"
+                                    class="block text-xs font-medium text-gray-300 mb-1 ml-1 uppercase text-high-contrast">Quantity</label>
+                                <input id="license-quantity" type="number" value="1" min="1" max="10" required onchange="updateLicenseTotal()"
+                                    class="w-full bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                                <p id="insufficientBalanceMsg" class="text-xs text-red-400 mt-1 hidden">Insufficient Balance</p>
+                            </div>
+                            <input type="hidden" id="custom-duration-id" value="">
 
                             <div class="pt-4 flex justify-between items-center">
-                                <span class="text-white font-medium text-lg">Your Total Balance:</span>
+                                <span class="text-white font-medium text-lg">Your Total:</span>
                                 <span id="licenseTotalCost" class="text-lg font-mono text-green-400">---</span>
                             </div>
 
@@ -1479,17 +2069,22 @@
                         </div>
 
                         <div class="widget-card rounded-xl p-6">
-                            <h3 class="text-xl font-semibold text-cyber-pink mb-4">Security Protocol</h3>
-                            <p class="text-gray-400 text-sm">Change your security credentials.</p>
-                            <button onclick="changePasswordPrompt()" class="glowing-button text-sm px-4 py-2 mt-4 rounded-lg">
-                                Change Password
-                            </button>
+                            <h3 class="text-xl font-semibold text-cyber-pink mb-4">Add Balance (Paytm)</h3>
+                            <p class="text-gray-400 text-sm">Create a payment order and complete payment to auto-credit your balance.</p>
+                            <div class="flex gap-2 mt-3">
+                                <input id="topup-amount" type="number" min="10" step="1" placeholder="Amount (₹)" class="flex-1 bg-white/10 border border-primary/30 text-white p-2 rounded-lg">
+                                <button onclick="createTopupOrder()" class="glowing-button text-sm px-4 py-2 rounded-lg">Create Order</button>
+                            </div>
+                            <p id="topup-order-msg" class="text-xs text-gray-400 mt-2"></p>
                         </div>
                     </div>
                 </section>
 
             </main>
         </div>
+        <footer class="p-4 text-center text-xs text-gray-500 border-t border-gray-700/50 dashboard-panel">
+            © 2024 Ztrax Console • Powered by Vivek
+        </footer>
     </div>
 </body>
 
