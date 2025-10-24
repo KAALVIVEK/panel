@@ -33,6 +33,19 @@ function sanitizeAmount($value, float $default = 10.00): float {
 // Inputs
 $amount = sanitizeAmount($_POST['amount'] ?? $_GET['amount'] ?? null);
 $orderId = generateOrderId();
+// Optional params accepted by gateway
+$remark1 = isset($_REQUEST['remark1']) ? substr(trim((string)$_REQUEST['remark1']), 0, 64) : '';
+$remark2 = isset($_REQUEST['remark2']) ? substr(trim((string)$_REQUEST['remark2']), 0, 64) : '';
+$redirectUrlParam = trim((string)($_REQUEST['redirect_url'] ?? ''));
+if ($redirectUrlParam === '') {
+    $redirectUrlParam = (defined('GATEWAY_REDIRECT_URL') ? GATEWAY_REDIRECT_URL : '') ?: (function() {
+        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        $base = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/\\');
+        if ($base === '') { $base = '/'; }
+        return $scheme . '://' . $host . rtrim($base, '/') . '/dashboard.html';
+    })();
+}
 
 // Request to Gateway
 $payload = [
@@ -48,7 +61,10 @@ $form = [
     'user_token' => USER_TOKEN,
     'order_id'   => $payload['order_id'],
     'amount'     => $payload['amount'],
-    'route'      => defined('DEFAULT_ROUTE') ? DEFAULT_ROUTE : 1,
+    'redirect_url' => $redirectUrlParam,
+    'remark1'      => $remark1,
+    'remark2'      => $remark2,
+    'route'        => defined('DEFAULT_ROUTE') ? DEFAULT_ROUTE : 1,
 ];
 curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($form));
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -66,6 +82,9 @@ logPaymentEvent('create_order.requested', [
     'order_id' => $orderId,
     'amount'   => $payload['amount'],
     'route'    => $form['route'],
+    'redirect_url' => $form['redirect_url'],
+    'remark1'  => $remark1,
+    'remark2'  => $remark2,
     'url'      => $url,
     'http'     => $httpCode,
 ]);
