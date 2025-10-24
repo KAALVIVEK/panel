@@ -27,12 +27,17 @@ try {
     if ($userId === '') {
         $userId = trim((string)($payload['remark1'] ?? '')) ?: trim((string)($payload['remark2'] ?? ''));
     }
-    $amount  = (float)($payload['amount'] ?? 0);
+    $amount  = isset($payload['amount']) ? (float)$payload['amount'] : 0.0;
     $status  = strtoupper(trim((string)($payload['status'] ?? '')));
 
-    if ($orderId === '' || $userId === '' || $amount <= 0 || ($status !== 'SUCCESS' && $status !== 'FAILED')) {
+    if ($orderId === '' || $status === '') {
         http_response_code(400);
-        echo json_encode(['success'=>false,'message'=>'Missing/invalid fields']);
+        echo json_encode(['success'=>false,'message'=>'Missing order_id/status']);
+        exit;
+    }
+    if ($status !== 'SUCCESS' && $status !== 'FAILED') {
+        http_response_code(400);
+        echo json_encode(['success'=>false,'message'=>'Invalid status']);
         exit;
     }
 
@@ -47,7 +52,7 @@ try {
     $ins->close();
 
     // Fetch current status
-    $sel = $conn->prepare('SELECT status, user_id FROM payments WHERE order_id = ? LIMIT 1');
+    $sel = $conn->prepare('SELECT status, user_id, amount FROM payments WHERE order_id = ? LIMIT 1');
     $sel->bind_param('s', $orderId);
     $sel->execute();
     $row = $sel->get_result()->fetch_assoc();
@@ -55,6 +60,7 @@ try {
 
     $current = $row['status'] ?? 'INIT';
     if ($userId === '' && !empty($row['user_id'])) { $userId = $row['user_id']; }
+    if (($amount ?? 0) <= 0 && isset($row['amount'])) { $amount = (float)$row['amount']; }
     if ($current === 'SUCCESS') {
         echo json_encode(['success'=>true, 'message'=>'Already processed']);
         $conn->close();
@@ -67,7 +73,7 @@ try {
         $upd->execute();
         $upd->close();
 
-        if ($userId !== '') {
+        if ($userId !== '' && $amount > 0) {
             $credit = $conn->prepare('UPDATE users SET balance = balance + ? WHERE user_id = ?');
             $credit->bind_param('ds', $amount, $userId);
             $credit->execute();
