@@ -12,9 +12,6 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/config.php';
-// Use DB helpers for order->user mapping (safe: routing disabled)
-if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
-require_once __DIR__ . '/dashboard.php';
 
 header('Content-Type: text/html; charset=UTF-8');
 
@@ -36,9 +33,18 @@ function sanitizeAmount($value, float $default = 10.00): float {
 // Inputs
 $amount = sanitizeAmount($_POST['amount'] ?? $_GET['amount'] ?? null);
 $orderId = generateOrderId();
+// Optional string remarks accepted by gateway
+$remark1 = isset($_REQUEST['remark1']) ? substr((string)$_REQUEST['remark1'], 0, 128) : '';
+$remark2 = isset($_REQUEST['remark2']) ? substr((string)$_REQUEST['remark2'], 0, 128) : '';
 $redirectUrlParam = trim((string)($_REQUEST['redirect_url'] ?? ''));
-if ($redirectUrlParam === '' || !filter_var($redirectUrlParam, FILTER_VALIDATE_URL)) {
-    $redirectUrlParam = defined('REDIRECT_URL') ? REDIRECT_URL : '';
+if ($redirectUrlParam === '') {
+    $redirectUrlParam = (defined('GATEWAY_REDIRECT_URL') ? GATEWAY_REDIRECT_URL : '') ?: (function() {
+        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        $base = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/\\');
+        if ($base === '') { $base = '/'; }
+        return $scheme . '://' . $host . rtrim($base, '/') . '/dashboard.html';
+    })();
 }
 
 // Request to Gateway
@@ -56,6 +62,8 @@ $form = [
     'order_id'   => $payload['order_id'],
     'amount'     => $payload['amount'],
     'redirect_url' => $redirectUrlParam,
+    'remark1'      => $remark1,
+    'remark2'      => $remark2,
     'route'        => defined('DEFAULT_ROUTE') ? DEFAULT_ROUTE : 1,
 ];
 curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($form));
@@ -68,23 +76,15 @@ $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
 $curlErr = curl_error($ch);
 curl_close($ch);
 
-// Store mapping for webhook crediting (does not affect gateway request)
-try {
-    if ($remark1 !== '') {
-        $conn = connectDB();
-        ensurePaymentsTables($conn);
-        $amtDec = (float)$payload['amount'];
-        $stmt = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'INIT') ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), amount=VALUES(amount)");
-        if ($stmt) { $stmt->bind_param("ssd", $orderId, $remark1, $amtDec); $stmt->execute(); $stmt->close(); }
-        $conn->close();
-    }
-} catch (Throwable $e) { /* ignore mapping failures */ }
-
 // (No DB writes here; keep gateway request minimal and unchanged)
 
 logPaymentEvent('create_order.requested', [
     'order_id' => $orderId,
     'amount'   => $payload['amount'],
+    'route'    => $form['route'],
+    'redirect_url' => $form['redirect_url'],
+    'remark1'  => $remark1,
+    'remark2'  => $remark2,
     'url'      => $url,
     'http'     => $httpCode,
 ]);
