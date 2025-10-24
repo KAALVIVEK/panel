@@ -12,12 +12,16 @@ define('GATEWAY_REDIRECT_URL', getenv('GATEWAY_REDIRECT_URL') ?: 'https://pay.t-
 
 function apiUrl(string $path): string {
     $base = rtrim(API_BASE_URL, '/');
-    $suffix = '/' . ltrim($path, '/');
-    // If base already ends with the requested path, avoid duplicating it
-    if (strlen($base) >= strlen($suffix) && substr($base, -strlen($suffix)) === $suffix) {
+    $p = '/' . ltrim($path, '/');
+    // If base already equals target, return base
+    if (strcasecmp($base, rtrim($base . $p, '/')) === 0 || substr($base, -strlen($p)) === $p) {
         return $base;
     }
-    return $base . $suffix;
+    // If base ends with /api and path starts with /api/, avoid double /api
+    if (preg_match('#/api$#i', $base) && preg_match('#^/api/#i', $p)) {
+        return $base . substr($p, 4);
+    }
+    return $base . $p;
 }
 
 function logPaymentEvent(string $event, array $data = []): void {
