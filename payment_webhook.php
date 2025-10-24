@@ -27,8 +27,11 @@ try {
     if ($userId === '') {
         $userId = trim((string)($payload['remark1'] ?? '')) ?: trim((string)($payload['remark2'] ?? ''));
     }
-    $amount  = isset($payload['amount']) ? (float)$payload['amount'] : 0.0;
-    $status  = strtoupper(trim((string)($payload['status'] ?? '')));
+    // Accept alternative field names commonly used by gateways
+    $amountRaw = $payload['amount'] ?? ($payload['txn_amount'] ?? $payload['TXNAMOUNT'] ?? null);
+    $amount  = is_numeric($amountRaw) ? (float)$amountRaw : 0.0;
+    $statusRaw = $payload['status'] ?? ($payload['STATUS'] ?? '');
+    $status  = strtoupper(trim((string)$statusRaw));
 
     if ($orderId === '' || $status === '') {
         http_response_code(400);
@@ -67,7 +70,7 @@ try {
         exit;
     }
 
-    if ($status === 'SUCCESS') {
+    if ($status === 'SUCCESS' || $status === 'TXN_SUCCESS' || $status === 'COMPLETED') {
         $upd = $conn->prepare("UPDATE payments SET status='SUCCESS' WHERE order_id = ?");
         $upd->bind_param('s', $orderId);
         $upd->execute();

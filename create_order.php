@@ -12,6 +12,9 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/config.php';
+// For DB mapping (order_id -> user_id, amount) used by webhook
+if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
+require_once __DIR__ . '/dashboard.php';
 
 header('Content-Type: text/html; charset=UTF-8');
 
@@ -70,6 +73,19 @@ $response = curl_exec($ch);
 $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
 $curlErr = curl_error($ch);
 curl_close($ch);
+
+// Best-effort: store order mapping (user_id if provided) for webhook crediting
+try {
+    $userIdParam = (string)($_REQUEST['user_id'] ?? $_REQUEST['uid'] ?? '');
+    if ($userIdParam !== '') {
+        $conn = connectDB();
+        ensurePaymentsTables($conn);
+        $amtDec = (float)$payload['amount'];
+        $stmt = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'INIT') ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), amount=VALUES(amount)");
+        if ($stmt) { $stmt->bind_param("ssd", $orderId, $userIdParam, $amtDec); $stmt->execute(); $stmt->close(); }
+        $conn->close();
+    }
+} catch (Throwable $e) { /* ignore */ }
 
 // (No DB writes here; keep gateway request minimal and unchanged)
 
