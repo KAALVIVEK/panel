@@ -2,27 +2,18 @@
 declare(strict_types=1);
 
 /**
- * Create Payment Order (Clean Integration)
- *
+ * Create Payment Order (Minimal Integration)
  * - Generates a unique order_id automatically
- * - Accepts an amount via GET/POST (?amount=) or uses a default
- * - Calls the gateway API https://pay.t-g.xyz/api/create-order with Authorization header
- * - Parses the JSON response to retrieve payment_url
+ * - Accepts an amount via GET/POST (?amount=)
+ * - Calls https://pay.t-g.xyz/api/create-order with Authorization header
+ * - Parses JSON response to retrieve result.payment_url
  * - Displays the payment_url as a clickable link and auto-redirects the user
- * - Handles HTTP errors and invalid API responses gracefully
+ * - Logs outcomes to storage/payment_logs.log
  */
 
 require_once __DIR__ . '/config.php';
 
 header('Content-Type: text/html; charset=UTF-8');
-
-// ----- Helpers -----
-function buildWebhookUrl(): string {
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    $basePath = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/');
-    return $scheme . '://' . $host . ($basePath ? $basePath : '') . '/webhook.php';
-}
 
 function generateOrderId(): string {
     try {
@@ -39,16 +30,14 @@ function sanitizeAmount($value, float $default = 10.00): float {
     return round($amount, 2);
 }
 
-// ----- Inputs -----
+// Inputs
 $amount = sanitizeAmount($_POST['amount'] ?? $_GET['amount'] ?? null);
 $orderId = generateOrderId();
-$webhookUrl = buildWebhookUrl();
 
-// ----- Request to Gateway -----
+// Request to Gateway
 $payload = [
-    'order_id'    => $orderId,
-    'amount'      => number_format($amount, 2, '.', ''),
-    'webhook_url' => $webhookUrl,
+    'order_id' => $orderId,
+    'amount'   => number_format($amount, 2, '.', ''),
 ];
 
 $url = apiUrl('/api/create-order');
@@ -66,7 +55,6 @@ $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
 $curlErr = curl_error($ch);
 curl_close($ch);
 
-// Log the API call outcome (without sensitive data)
 logPaymentEvent('create_order.requested', [
     'order_id' => $orderId,
     'amount'   => $payload['amount'],
@@ -87,8 +75,8 @@ if ($curlErr) {
     if (!is_array($parsed)) {
         $errorMessage = 'Invalid JSON received from gateway.';
     } else {
-        // Common structures: { payment_url: "..." } OR { data: { payment_url: "..." }}
-        $paymentUrl = $parsed['payment_url'] ?? ($parsed['data']['payment_url'] ?? null);
+        // Expected: { status, message, result: { payment_url } }
+        $paymentUrl = $parsed['result']['payment_url'] ?? ($parsed['payment_url'] ?? null);
         if (!is_string($paymentUrl) || $paymentUrl === '') {
             $errorMessage = 'payment_url not found in gateway response.';
         }
@@ -101,9 +89,13 @@ if ($errorMessage !== null) {
         'reason'   => $errorMessage,
         'body'     => is_string($response) ? mb_substr($response, 0, 2000) : null,
     ]);
+} else {
+    logPaymentEvent('create_order.succeeded', [
+        'order_id' => $orderId,
+        'payment_url' => $paymentUrl,
+    ]);
 }
 
-// ----- Output HTML -----
 $pageTitle = 'Create Payment Order';
 ?>
 <!doctype html>
