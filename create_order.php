@@ -43,12 +43,17 @@ $payload = [
 $url = apiUrl('/api/create-order');
 $ch = curl_init($url);
 curl_setopt($ch, CURLOPT_POST, true);
-curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload, JSON_UNESCAPED_SLASHES));
+// Align with gateway: form-encoded body including user_token and route
+$form = [
+    'user_token' => USER_TOKEN,
+    'order_id'   => $payload['order_id'],
+    'amount'     => $payload['amount'],
+    'route'      => defined('DEFAULT_ROUTE') ? DEFAULT_ROUTE : 1,
+];
+curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($form));
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 curl_setopt($ch, CURLOPT_HTTPHEADER, [
-    'Content-Type: application/json',
-    'Accept: application/json',
-    'Authorization: Bearer ' . USER_TOKEN,
+    'Content-Type: application/x-www-form-urlencoded',
 ]);
 $response = curl_exec($ch);
 $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -58,6 +63,7 @@ curl_close($ch);
 logPaymentEvent('create_order.requested', [
     'order_id' => $orderId,
     'amount'   => $payload['amount'],
+    'route'    => $form['route'],
     'url'      => $url,
     'http'     => $httpCode,
 ]);
