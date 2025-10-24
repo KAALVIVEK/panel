@@ -391,7 +391,7 @@
             const input = document.getElementById('topup-amount');
             const amt = parseFloat(input?.value || '0');
             if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
-            const url = `create_order.php?amount=${encodeURIComponent(String(amt))}&user_id=${encodeURIComponent(String(window.currentUserId || ''))}`;
+            const url = `create_order.php?amount=${encodeURIComponent(String(amt))}`;
             window.open(url, '_blank');
             const msg = document.getElementById('topup-order-msg');
             if (msg) msg.textContent = `Creating payment order for ₹${amt.toFixed(2)}...`;
@@ -402,7 +402,7 @@
             const msg = document.getElementById('topup-order-msg');
             if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
             // Open payment order page in a new tab
-            window.open(`create_order.php?amount=${encodeURIComponent(String(amt))}&user_id=${encodeURIComponent(String(window.currentUserId || ''))}`,'_blank');
+            window.open(`create_order.php?amount=${encodeURIComponent(String(amt))}`,'_blank');
             if (msg) msg.textContent = `Redirected to payment page for ₹${amt.toFixed(2)}.`;
         };
 
