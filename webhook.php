@@ -1,46 +1,58 @@
 <?php
-// Paytm webhook endpoint
-header('Content-Type: application/json');
+declare(strict_types=1);
+
+/**
+ * Webhook Listener for Payment Updates
+ *
+ * Accepts POST with fields: order_id, status, amount, txn_id
+ * Validates a shared secret via header: X-Webhook-Secret: <WEBHOOK_SECRET>
+ * Logs the received payload and returns JSON response.
+ *
+ * Note: This is a simple, framework-agnostic endpoint suitable for testing.
+ */
+
 require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/paytm_checksum.php';
-require_once __DIR__ . '/dashboard.php';
 
-$input = file_get_contents('php://input');
-$payload = json_decode($input, true);
-if (!$payload) { $payload = $_POST; }
+header('Content-Type: application/json');
 
-try {
-  $orderId = $payload['ORDERID'] ?? $payload['orderId'] ?? '';
-  $status = $payload['STATUS'] ?? $payload['status'] ?? '';
-  $txnId = $payload['TXNID'] ?? $payload['txnId'] ?? '';
-  $checksum = $payload['CHECKSUMHASH'] ?? $payload['checksum'] ?? '';
-  if (!$orderId) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Missing orderId']); exit; }
+// Read raw input for logging and parse JSON or form data
+$raw = file_get_contents('php://input') ?: '';
+$data = json_decode($raw, true);
+if (!is_array($data)) { $data = $_POST; }
+if (!is_array($data)) { $data = []; }
 
-  if (!PaytmChecksum::verifySignature($payload, PAYTM_MERCHANT_KEY, $checksum)) {
-    http_response_code(400); echo json_encode(['success'=>false,'message'=>'Checksum invalid']); exit; }
-
-  $conn = connectDB(); ensurePaymentsTables($conn);
-  $sel = $conn->prepare('SELECT user_id, amount, status FROM payments WHERE order_id=? LIMIT 1');
-  $sel->bind_param('s', $orderId); $sel->execute(); $row = $sel->get_result()->fetch_assoc();
-  if (!$row) { http_response_code(404); echo json_encode(['success'=>false,'message'=>'Order not found']); exit; }
-  if ($row['status'] === 'SUCCESS') { echo json_encode(['success'=>true]); exit; }
-
-  if ($status === 'TXN_SUCCESS' || $status === 'SUCCESS') {
-    $upd = $conn->prepare('UPDATE payments SET status="SUCCESS", txn_id=?, raw_response=? WHERE order_id=?');
-    $upd->bind_param('sss', $txnId, $input, $orderId); $upd->execute();
-    // credit user
-    if ($row['user_id'] !== 'guest') {
-      $credit = $conn->prepare('UPDATE users SET balance = balance + ? WHERE user_id=?');
-      $credit->bind_param('ds', $row['amount'], $row['user_id']);
-      $credit->execute();
-    }
-    echo json_encode(['success'=>true]);
-  } else {
-    $upd = $conn->prepare('UPDATE payments SET status="FAILED", raw_response=? WHERE order_id=?');
-    $upd->bind_param('ss', $input, $orderId); $upd->execute();
-    echo json_encode(['success'=>true]);
-  }
-  $conn->close();
-} catch (Exception $e) {
-  http_response_code(500); echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
+// Validate secret header
+$receivedSecret = $_SERVER['HTTP_X_WEBHOOK_SECRET'] ?? '';
+if (!is_string($receivedSecret) || $receivedSecret === '' || $receivedSecret !== WEBHOOK_SECRET) {
+    http_response_code(401);
+    echo json_encode(['success' => false, 'message' => 'Unauthorized webhook']);
+    logPaymentEvent('webhook.unauthorized', ['ip' => $_SERVER['REMOTE_ADDR'] ?? '?']);
+    exit;
 }
+
+// Extract expected fields safely
+$orderId = isset($data['order_id']) ? (string)$data['order_id'] : '';
+$status  = isset($data['status']) ? (string)$data['status'] : '';
+$amount  = isset($data['amount']) ? (string)$data['amount'] : '';
+$txnId   = isset($data['txn_id']) ? (string)$data['txn_id'] : '';
+
+if ($orderId === '' || $status === '') {
+    http_response_code(400);
+    echo json_encode(['success' => false, 'message' => 'Missing order_id or status']);
+    logPaymentEvent('webhook.invalid', ['body' => mb_substr($raw, 0, 2000)]);
+    exit;
+}
+
+// Log the event. In production, update your database accordingly.
+logPaymentEvent('webhook.received', [
+    'order_id' => $orderId,
+    'status'   => $status,
+    'amount'   => $amount,
+    'txn_id'   => $txnId,
+]);
+
+// Example: echo back a simple OK for testing
+echo json_encode([
+    'success' => true,
+    'message' => 'Webhook processed',
+]);

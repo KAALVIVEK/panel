@@ -1,69 +1,154 @@
 <?php
-// Creates a Paytm UPI QR order and returns orderId, upi_link, qr_image
-header('Content-Type: application/json');
+declare(strict_types=1);
+
+/**
+ * Create Payment Order (Clean Integration)
+ *
+ * - Generates a unique order_id automatically
+ * - Accepts an amount via GET/POST (?amount=) or uses a default
+ * - Calls the gateway API https://pay.t-g.xyz/api/create-order with Authorization header
+ * - Parses the JSON response to retrieve payment_url
+ * - Displays the payment_url as a clickable link and auto-redirects the user
+ * - Handles HTTP errors and invalid API responses gracefully
+ */
+
 require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/paytm_checksum.php';
-require_once __DIR__ . '/dashboard.php'; // for DB connection and payments table
 
-try {
-  $amount = isset($_POST['amount']) ? (float)$_POST['amount'] : 0;
-  $userId = isset($_POST['user_id']) ? trim($_POST['user_id']) : 'guest';
-  if ($amount <= 0) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid amount']); exit; }
+header('Content-Type: text/html; charset=UTF-8');
 
-  $conn = connectDB(); ensurePaymentsTables($conn);
-  $orderId = 'ORD' . date('YmdHis') . strtoupper(substr(md5(uniqid('', true)), 0, 8));
-
-  // Insert INIT row
-  $ins = $conn->prepare('INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, "INIT")');
-  $ins->bind_param('ssd', $orderId, $userId, $amount);
-  $ins->execute();
-
-  // Build payload for Paytm QR create
-  $body = [
-    'mid' => PAYTM_MID,
-    'orderId' => $orderId,
-    'amount' => number_format($amount, 2, '.', ''),
-    'businessType' => 'UPI_QR',
-    'posId' => 'WEB_01'
-  ];
-  $signature = PaytmChecksum::generateSignature(json_encode($body, JSON_UNESCAPED_SLASHES), PAYTM_MERCHANT_KEY);
-  $payload = json_encode(['body'=>$body, 'head'=>['signature'=>$signature]], JSON_UNESCAPED_SLASHES);
-
-  $url = PAYTM_API_BASE . '/paymentservices/qr/create';
-  $ch = curl_init($url);
-  curl_setopt($ch, CURLOPT_POST, true);
-  curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-  curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-  curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-  $resp = curl_exec($ch);
-  $err = curl_error($ch);
-  curl_close($ch);
-
-  $qrImage = null; $upiLink = null; $raw = $resp;
-  if ($err || !$resp) {
-    // Fallback UPI link
-    $upiLink = 'upi://pay?pa=' . urlencode(PAYTM_UPI_ID) . '&pn=' . urlencode('Payee') . '&am=' . urlencode(number_format($amount,2,'.','')) . '&cu=INR&tn=' . urlencode('Order '.$orderId) . '&tr=' . urlencode($orderId);
-  } else {
-    $res = json_decode($resp, true);
-    if (isset($res['body']['qrImage'])) {
-      $qrImage = 'data:image/png;base64,' . $res['body']['qrImage'];
-    } else {
-      $upiLink = 'upi://pay?pa=' . urlencode(PAYTM_UPI_ID) . '&pn=' . urlencode('Payee') . '&am=' . urlencode(number_format($amount,2,'.','')) . '&cu=INR&tn=' . urlencode('Order '.$orderId) . '&tr=' . urlencode($orderId);
-    }
-  }
-
-  // Update raw response
-  $upd = $conn->prepare('UPDATE payments SET raw_response=? WHERE order_id=?');
-  $upd->bind_param('ss', $raw, $orderId);
-  $upd->execute();
-
-  echo json_encode(['success'=>true,'data'=>[
-    'orderId'=>$orderId,
-    'upi_link'=>$upiLink,
-    'qr_image'=>$qrImage
-  ]]);
-  $conn->close();
-} catch (Exception $e) {
-  http_response_code(500);
-  echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
+// ----- Helpers -----
+function buildWebhookUrl(): string {
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $basePath = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '/')), '/');
+    return $scheme . '://' . $host . ($basePath ? $basePath : '') . '/webhook.php';
 }
+
+function generateOrderId(): string {
+    try {
+        $rand = bin2hex(random_bytes(6));
+    } catch (Throwable $e) {
+        $rand = substr(md5(uniqid('', true)), 0, 12);
+    }
+    return 'ORD-' . date('YmdHis') . '-' . strtoupper($rand);
+}
+
+function sanitizeAmount($value, float $default = 10.00): float {
+    $amount = is_numeric($value) ? (float)$value : $default;
+    if (!is_finite($amount) || $amount <= 0) { return $default; }
+    return round($amount, 2);
+}
+
+// ----- Inputs -----
+$amount = sanitizeAmount($_POST['amount'] ?? $_GET['amount'] ?? null);
+$orderId = generateOrderId();
+$webhookUrl = buildWebhookUrl();
+
+// ----- Request to Gateway -----
+$payload = [
+    'order_id'    => $orderId,
+    'amount'      => number_format($amount, 2, '.', ''),
+    'webhook_url' => $webhookUrl,
+];
+
+$url = apiUrl('/api/create-order');
+$ch = curl_init($url);
+curl_setopt($ch, CURLOPT_POST, true);
+curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload, JSON_UNESCAPED_SLASHES));
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_HTTPHEADER, [
+    'Content-Type: application/json',
+    'Accept: application/json',
+    'Authorization: Bearer ' . USER_TOKEN,
+]);
+$response = curl_exec($ch);
+$httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+$curlErr = curl_error($ch);
+curl_close($ch);
+
+// Log the API call outcome (without sensitive data)
+logPaymentEvent('create_order.requested', [
+    'order_id' => $orderId,
+    'amount'   => $payload['amount'],
+    'url'      => $url,
+    'http'     => $httpCode,
+]);
+
+$errorMessage = null;
+$paymentUrl = null;
+$parsed = null;
+
+if ($curlErr) {
+    $errorMessage = 'Failed to reach the payment gateway.';
+} elseif ($httpCode < 200 || $httpCode >= 300) {
+    $errorMessage = 'Gateway returned an error (HTTP ' . $httpCode . ').';
+} else {
+    $parsed = json_decode((string)$response, true);
+    if (!is_array($parsed)) {
+        $errorMessage = 'Invalid JSON received from gateway.';
+    } else {
+        // Common structures: { payment_url: "..." } OR { data: { payment_url: "..." }}
+        $paymentUrl = $parsed['payment_url'] ?? ($parsed['data']['payment_url'] ?? null);
+        if (!is_string($paymentUrl) || $paymentUrl === '') {
+            $errorMessage = 'payment_url not found in gateway response.';
+        }
+    }
+}
+
+if ($errorMessage !== null) {
+    logPaymentEvent('create_order.failed', [
+        'order_id' => $orderId,
+        'reason'   => $errorMessage,
+        'body'     => is_string($response) ? mb_substr($response, 0, 2000) : null,
+    ]);
+}
+
+// ----- Output HTML -----
+$pageTitle = 'Create Payment Order';
+?>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title><?php echo htmlspecialchars($pageTitle, ENT_QUOTES); ?></title>
+  <?php if ($paymentUrl): ?>
+  <meta http-equiv="refresh" content="1;url=<?php echo htmlspecialchars($paymentUrl, ENT_QUOTES); ?>">
+  <?php endif; ?>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.5;padding:24px;background:#0b1020;color:#e9eefc}
+    .card{max-width:720px;margin:40px auto;background:#121a35;border:1px solid #22305c;border-radius:12px;padding:24px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+    .muted{opacity:.85}
+    a.button{display:inline-block;margin-top:8px;background:#4da3ff;color:#001;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700}
+    .error{background:#2a0f14;border:1px solid #7a1b27;color:#ffd7de;padding:12px;border-radius:8px}
+    pre{white-space:pre-wrap;word-break:break-word;background:#0b132b;border:1px solid #21335a;border-radius:8px;padding:12px;overflow:auto}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Payment Initialization</h2>
+    <p class="muted">Order ID: <strong><?php echo htmlspecialchars($orderId, ENT_QUOTES); ?></strong></p>
+    <p class="muted">Amount: <strong>₹<?php echo htmlspecialchars(number_format($amount, 2, '.', ''), ENT_QUOTES); ?></strong></p>
+    <?php if ($paymentUrl): ?>
+      <p>Payment link:
+        <a class="button" href="<?php echo htmlspecialchars($paymentUrl, ENT_QUOTES); ?>" target="_blank" rel="noopener">Pay Now</a>
+      </p>
+      <p class="muted">Redirecting you automatically…</p>
+      <script>
+        setTimeout(function(){ window.location.href = <?php echo json_encode($paymentUrl); ?>; }, 800);
+      </script>
+    <?php else: ?>
+      <div class="error">
+        <strong>Unable to create the payment order.</strong>
+        <div class="muted">Reason: <?php echo htmlspecialchars($errorMessage ?? 'Unknown error', ENT_QUOTES); ?></div>
+      </div>
+      <?php if (isset($parsed) && is_array($parsed)): ?>
+        <details style="margin-top:8px">
+          <summary>Gateway response</summary>
+          <pre><?php echo htmlspecialchars(json_encode($parsed, JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES), ENT_QUOTES); ?></pre>
+        </details>
+      <?php endif; ?>
+    <?php endif; ?>
+  </div>
+</body>
+</html>
