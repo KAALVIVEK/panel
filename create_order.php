@@ -49,6 +49,8 @@ $form = [
     'order_id'   => $payload['order_id'],
     'amount'     => $payload['amount'],
     'route'      => defined('DEFAULT_ROUTE') ? DEFAULT_ROUTE : 1,
+    // Gateway will redirect here after payment (success/fail)
+    'redirect_url' => defined('GATEWAY_REDIRECT_URL') ? GATEWAY_REDIRECT_URL : 'https://pay.t-g.xyz/',
 ];
 curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($form));
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
