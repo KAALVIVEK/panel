@@ -53,7 +53,8 @@ $payload = [
     'amount'   => number_format($amount, 2, '.', ''),
 ];
 
-$url = 'https://pay.t-g.xyz/api/create-order';
+// Build endpoint using base URL helper (reverted to working form)
+$url = apiUrl('/api/create-order');
 $ch = curl_init($url);
 curl_setopt($ch, CURLOPT_POST, true);
 // Align with gateway: form-encoded body including user_token and route
@@ -71,10 +72,36 @@ curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 curl_setopt($ch, CURLOPT_HTTPHEADER, [
     'Content-Type: application/x-www-form-urlencoded',
 ]);
+// Optional debug logging of raw cURL transfer
+$debug = isset($_GET['debug']) || isset($_POST['debug']);
+if ($debug) {
+    $curlLog = __DIR__ . '/storage/curl_debug.log';
+    $d = dirname($curlLog);
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    $fh = @fopen($curlLog, 'a');
+    if ($fh) {
+        curl_setopt($ch, CURLOPT_VERBOSE, true);
+        curl_setopt($ch, CURLOPT_STDERR, $fh);
+    }
+}
+
 $response = curl_exec($ch);
 $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+$contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
 $curlErr = curl_error($ch);
 curl_close($ch);
+if (isset($fh) && $fh) { @fclose($fh); }
+
+// Log raw gateway response snippet for troubleshooting
+logPaymentEvent('create_order.gateway_response', [
+    'order_id'     => $orderId,
+    'url'          => $url,
+    'http'         => $httpCode,
+    'content_type' => $contentType,
+    'len'          => strlen((string)$response),
+    'raw_snippet'  => mb_substr((string)$response, 0, 2000),
+    'form'         => $debug ? $form : null,
+]);
 
 // (No DB writes here; keep gateway request minimal and unchanged)
 
