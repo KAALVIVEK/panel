@@ -140,14 +140,30 @@ if ($curlErr) {
 } elseif ($httpCode < 200 || $httpCode >= 300) {
     $errorMessage = 'Gateway returned an error (HTTP ' . $httpCode . ').';
 } else {
-    $parsed = json_decode((string)$response, true);
-    if (!is_array($parsed)) {
-        $errorMessage = 'Invalid JSON received from gateway.';
-    } else {
-        // Common structures: { payment_url: "..." } OR { data: { payment_url: "..." }}
-        $paymentUrl = $parsed['payment_url'] ?? ($parsed['data']['payment_url'] ?? null);
-        if (!is_string($paymentUrl) || $paymentUrl === '') {
-            $errorMessage = 'payment_url not found in gateway response.';
+    $rawResp = (string)$response;
+    $parsed = json_decode($rawResp, true);
+    if (is_array($parsed)) {
+        // Try multiple common shapes
+        $candidates = [
+            $parsed['payment_url'] ?? null,
+            $parsed['data']['payment_url'] ?? null,
+            $parsed['url'] ?? null,
+            $parsed['data']['url'] ?? null,
+            $parsed['redirect_url'] ?? null,
+            $parsed['data']['redirect_url'] ?? null,
+            $parsed['paymentLink'] ?? null,
+            $parsed['data']['paymentLink'] ?? null,
+        ];
+        foreach ($candidates as $c) {
+            if (is_string($c) && $c !== '') { $paymentUrl = $c; break; }
+        }
+    }
+    // Fallback: if response isn't JSON or no known key found, try to extract a URL directly
+    if (!is_string($paymentUrl) || $paymentUrl === '') {
+        if (preg_match('#https?://[\w\-\.\/:\?\#\[\]@!\$&\'\(\)\*\+,;=%]+#', $rawResp, $m)) {
+            $paymentUrl = $m[0];
+        } else {
+            $errorMessage = 'Invalid JSON received from gateway.';
         }
     }
 }

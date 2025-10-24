@@ -386,14 +386,14 @@
             }
         }
 
-        // Add Balance - redirect to payment order page
+        // Add Balance - open payment in a new tab to avoid disrupting the dashboard/sidebar state
         window.createTopupOrder = () => {
             const amt = parseFloat(document.getElementById('topup-amount')?.value || '0');
             if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
             const url = `create_order.php?amount=${encodeURIComponent(String(amt))}&user_id=${encodeURIComponent(window.currentUserId || '')}`;
             const msg = document.getElementById('topup-order-msg');
-            if (msg) msg.textContent = 'Redirecting to payment...';
-            window.location.href = url;
+            if (msg) msg.textContent = 'Payment page opened in a new tab.';
+            window.open(url, '_blank');
         };
 
         window.checkRole = (requiredRole) => {
