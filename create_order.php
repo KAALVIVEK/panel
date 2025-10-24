@@ -12,9 +12,6 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/config.php';
-// Load DB helpers without triggering API routing
-if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
-require_once __DIR__ . '/dashboard.php';
 
 header('Content-Type: text/html; charset=UTF-8');
 
@@ -36,28 +33,6 @@ function sanitizeAmount($value, float $default = 10.00): float {
 // Inputs
 $amount = sanitizeAmount($_POST['amount'] ?? $_GET['amount'] ?? null);
 $orderId = generateOrderId();
-// Optional metadata to pass-through (gateway accepts remark1, remark2)
-$remark1 = isset($_REQUEST['remark1']) ? substr(trim((string)$_REQUEST['remark1']), 0, 64) : '';
-$remark2 = isset($_REQUEST['remark2']) ? substr(trim((string)$_REQUEST['remark2']), 0, 64) : '';
-// Try to capture user id for webhook mapping
-$userIdParam = isset($_REQUEST['user_id']) ? trim((string)$_REQUEST['user_id']) : '';
-if ($userIdParam === '') { $userIdParam = $remark1; }
-// Redirect URL (both success and failure should go to your panel)
-$redirectUrlParam = trim((string)($_REQUEST['redirect_url'] ?? ''));
-if ($redirectUrlParam === '' || !filter_var($redirectUrlParam, FILTER_VALIDATE_URL)) {
-    // Prefer configured constant when it's a valid absolute URL
-    $redirectUrlParam = (defined('GATEWAY_REDIRECT_URL') && filter_var(GATEWAY_REDIRECT_URL, FILTER_VALIDATE_URL))
-        ? GATEWAY_REDIRECT_URL
-        : (function() {
-            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-            $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-            $base = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/\\');
-            if ($base === '') { $base = '/'; }
-            // Send users to dashboard.html by default
-            $path = rtrim($base, '/') . '/dashboard.html';
-            return $scheme . '://' . $host . $path;
-        })();
-}
 
 // Request to Gateway
 $payload = [
@@ -70,13 +45,10 @@ $ch = curl_init($url);
 curl_setopt($ch, CURLOPT_POST, true);
 // Align with gateway: form-encoded body including user_token and route
 $form = [
-    'user_token'   => USER_TOKEN,
-    'amount'       => $payload['amount'],
-    'order_id'     => $payload['order_id'],
-    'redirect_url' => $redirectUrlParam,
-    'remark1'      => $remark1,
-    'remark2'      => $remark2,
-    'route'        => defined('DEFAULT_ROUTE') ? DEFAULT_ROUTE : 1,
+    'user_token' => USER_TOKEN,
+    'order_id'   => $payload['order_id'],
+    'amount'     => $payload['amount'],
+    'route'      => defined('DEFAULT_ROUTE') ? DEFAULT_ROUTE : 1,
 ];
 curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($form));
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -88,31 +60,12 @@ $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
 $curlErr = curl_error($ch);
 curl_close($ch);
 
-// Store INIT payment row for mapping (if user id known)
-try {
-    if ($userIdParam !== '') {
-        $conn = connectDB();
-        ensurePaymentsTables($conn);
-        $stmt = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'INIT') ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), amount = VALUES(amount)");
-        if ($stmt) {
-            $amtDec = (float)$payload['amount'];
-            $stmt->bind_param("ssd", $orderId, $userIdParam, $amtDec);
-            $stmt->execute();
-            $stmt->close();
-        }
-        $conn->close();
-    }
-} catch (Throwable $e) {
-    // best-effort; ignore
-}
+// (No DB writes here; keep gateway request minimal and unchanged)
 
 logPaymentEvent('create_order.requested', [
     'order_id' => $orderId,
     'amount'   => $payload['amount'],
     'route'    => $form['route'],
-    'redirect_url' => $form['redirect_url'],
-    'remark1'  => $remark1,
-    'remark2'  => $remark2,
     'url'      => $url,
     'http'     => $httpCode,
 ]);
