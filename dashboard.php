@@ -170,29 +170,30 @@ function checkRole($currentRole, $requiredRole) {
 }
 
 
-// --- 3. INPUT HANDLING ---
-$inputJSON = file_get_contents('php://input');
-$input = json_decode($inputJSON, true);
-if (!is_array($input)) { $input = $_POST ?? []; }
+// --- 3/4. INPUT HANDLING + ROUTING (Disabled when used as a library) ---
+if (!defined('DASHBOARD_LIB_ONLY')) {
+    $inputJSON = file_get_contents('php://input');
+    $input = json_decode($inputJSON, true);
+    if (!is_array($input)) { $input = $_POST ?? []; }
 
-// Determine action via body first, then query param; fallback for Paytm callbacks
-$action = $input['action'] ?? ($_GET['action'] ?? null);
-if (!$action && (isset($input['ORDERID']) || isset($_REQUEST['ORDERID']))) {
-    $action = 'paytm_webhook';
-}
+    // Determine action via body first, then query param; fallback for Paytm callbacks
+    $action = $input['action'] ?? ($_GET['action'] ?? null);
+    if (!$action && (isset($input['ORDERID']) || isset($_REQUEST['ORDERID']))) {
+        $action = 'paytm_webhook';
+    }
 
-if (!$action) {
-    http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'Invalid API request format.']);
-    exit();
-}
+    if (!$action) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'Invalid API request format.']);
+        exit();
+    }
 
-$user_id = $input['user_id'] ?? null;
-$role = $input['role'] ?? null;
+    $user_id = $input['user_id'] ?? null;
+    $role = $input['role'] ?? null;
 
-// --- 4. API ROUTING ---
-try {
-    switch ($action) {
+    // --- 4. API ROUTING ---
+    try {
+        switch ($action) {
         // Paytm UPI QR flow handled via separate payment.php; legacy API removed
         case 'load_initial_data':
             loadInitialData($user_id);
@@ -362,14 +363,15 @@ try {
             apiDeleteLicense($input);
             break;
             
-        default:
-            http_response_code(400);
-            echo json_encode(['success' => false, 'message' => 'Unknown API action specified.']);
-            break;
+            default:
+                http_response_code(400);
+                echo json_encode(['success' => false, 'message' => 'Unknown API action specified.']);
+                break;
+        }
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Server Error: ' . $e->getMessage()]);
     }
-} catch (Exception $e) {
-    http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Server Error: ' . $e->getMessage()]);
 }
 
 

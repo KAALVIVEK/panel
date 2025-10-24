@@ -12,6 +12,8 @@ header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit; }
 
+// Load DB helpers without triggering API routing
+if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
 require_once __DIR__ . '/dashboard.php'; // reuse DB helpers and ensure tables
 
 try {
@@ -21,6 +23,10 @@ try {
 
     $orderId = trim((string)($payload['order_id'] ?? ''));
     $userId  = trim((string)($payload['user_id'] ?? ''));
+    // Fallback to remark1/remark2 for user id when not provided explicitly
+    if ($userId === '') {
+        $userId = trim((string)($payload['remark1'] ?? '')) ?: trim((string)($payload['remark2'] ?? ''));
+    }
     $amount  = (float)($payload['amount'] ?? 0);
     $status  = strtoupper(trim((string)($payload['status'] ?? '')));
 
