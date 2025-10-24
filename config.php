@@ -7,6 +7,8 @@ declare(strict_types=1);
 define('USER_TOKEN', getenv('USER_TOKEN') ?: 'YOUR_API_TOKEN_HERE');
 define('API_BASE_URL', getenv('API_BASE_URL') ?: 'https://pay.t-g.xyz');
 define('DEFAULT_ROUTE', is_numeric(getenv('DEFAULT_ROUTE')) ? (int)getenv('DEFAULT_ROUTE') : 1);
+// Where the gateway should redirect users after payment completion/cancel
+define('GATEWAY_REDIRECT_URL', getenv('GATEWAY_REDIRECT_URL') ?: 'https://pay.t-g.xyz/');
 
 function apiUrl(string $path): string {
     return rtrim(API_BASE_URL, '/') . '/' . ltrim($path, '/');
