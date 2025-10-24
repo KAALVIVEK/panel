@@ -36,6 +36,22 @@ $orderId = generateOrderId();
 // Optional metadata to pass-through (gateway accepts remark1, remark2)
 $remark1 = isset($_REQUEST['remark1']) ? substr(trim((string)$_REQUEST['remark1']), 0, 64) : '';
 $remark2 = isset($_REQUEST['remark2']) ? substr(trim((string)$_REQUEST['remark2']), 0, 64) : '';
+// Redirect URL (both success and failure should go to your panel)
+$redirectUrlParam = trim((string)($_REQUEST['redirect_url'] ?? ''));
+if ($redirectUrlParam === '' || !filter_var($redirectUrlParam, FILTER_VALIDATE_URL)) {
+    // Prefer configured constant when it's a valid absolute URL
+    $redirectUrlParam = (defined('GATEWAY_REDIRECT_URL') && filter_var(GATEWAY_REDIRECT_URL, FILTER_VALIDATE_URL))
+        ? GATEWAY_REDIRECT_URL
+        : (function() {
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+            $base = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/\\');
+            if ($base === '') { $base = '/'; }
+            // Send users to dashboard.html by default
+            $path = rtrim($base, '/') . '/dashboard.html';
+            return $scheme . '://' . $host . $path;
+        })();
+}
 
 // Request to Gateway
 $payload = [
@@ -49,9 +65,9 @@ curl_setopt($ch, CURLOPT_POST, true);
 // Align with gateway: form-encoded body including user_token and route
 $form = [
     'user_token'   => USER_TOKEN,
-    'order_id'     => $payload['order_id'],
     'amount'       => $payload['amount'],
-    'redirect_url' => defined('GATEWAY_REDIRECT_URL') ? GATEWAY_REDIRECT_URL : 'https://pay.t-g.xyz/',
+    'order_id'     => $payload['order_id'],
+    'redirect_url' => $redirectUrlParam,
     'remark1'      => $remark1,
     'remark2'      => $remark2,
     'route'        => defined('DEFAULT_ROUTE') ? DEFAULT_ROUTE : 1,
@@ -70,6 +86,9 @@ logPaymentEvent('create_order.requested', [
     'order_id' => $orderId,
     'amount'   => $payload['amount'],
     'route'    => $form['route'],
+    'redirect_url' => $form['redirect_url'],
+    'remark1'  => $remark1,
+    'remark2'  => $remark2,
     'url'      => $url,
     'http'     => $httpCode,
 ]);
