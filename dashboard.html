@@ -386,27 +386,24 @@
             }
         }
 
-        // Add Balance (UPI QR) - opens new tab with QR page
+        // Add Balance - opens new tab to create_order.php
         window.createTopupOrder = () => {
             const input = document.getElementById('topup-amount');
             const amt = parseFloat(input?.value || '0');
             if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
-            const orderId = 'ORDER_' + Date.now();
-            const url = `upi_qr.php?amount=${encodeURIComponent(String(amt))}&orderId=${encodeURIComponent(orderId)}`;
+            const url = `create_order.php?amount=${encodeURIComponent(String(amt))}`;
             window.open(url, '_blank');
             const msg = document.getElementById('topup-order-msg');
-            if (msg) msg.textContent = `Order created: ${orderId}. A new tab opened with the QR code.`;
+            if (msg) msg.textContent = `Creating payment order for ₹${amt.toFixed(2)}...`;
         };
 
         window.createTopupOrder = async () => {
             const amt = parseFloat(document.getElementById('topup-amount')?.value || '0');
             const msg = document.getElementById('topup-order-msg');
             if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
-            // Create UPI QR
-            // Open UPI QR page in a new tab for better UX
-            const orderId = 'ORDER_' + Date.now();
-            window.open(`upi_qr.php?amount=${encodeURIComponent(String(amt))}&orderId=${encodeURIComponent(orderId)}`,'_blank');
-            msg.textContent = `Order created: ${orderId}. A new tab was opened with the QR code.`;
+            // Open payment order page in a new tab
+            window.open(`create_order.php?amount=${encodeURIComponent(String(amt))}`,'_blank');
+            if (msg) msg.textContent = `Redirected to payment page for ₹${amt.toFixed(2)}.`;
         };
 
         window.checkRole = (requiredRole) => {
