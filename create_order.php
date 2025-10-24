@@ -53,7 +53,14 @@ $payload = [
     'amount'   => number_format($amount, 2, '.', ''),
 ];
 
-$url = apiUrl('/api/create-order');
+$endpoint = '/api/create-order';
+$base = rtrim(API_BASE_URL, '/');
+// Avoid duplicating the endpoint if API_BASE_URL already ends with it
+if (substr($base, -strlen($endpoint)) === $endpoint) {
+    $url = $base;
+} else {
+    $url = $base . $endpoint;
+}
 $ch = curl_init($url);
 curl_setopt($ch, CURLOPT_POST, true);
 // Align with gateway: form-encoded body including user_token and route
