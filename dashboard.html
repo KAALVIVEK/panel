@@ -391,11 +391,8 @@
             const input = document.getElementById('topup-amount');
             const amt = parseFloat(input?.value || '0');
             if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
-            // Set user_id cookie for server-side mapping (not sent to gateway)
-            if (window.currentUserId) {
-                document.cookie = `ztrax_user_id=${encodeURIComponent(window.currentUserId)}; Path=/; Max-Age=3600; SameSite=Lax`;
-            }
-            const url = `create_order.php?amount=${encodeURIComponent(String(amt))}`;
+            const params = new URLSearchParams({ amount: String(amt), remark1: String(window.currentUserId || ''), remark2: 'topup' });
+            const url = `create_order.php?${params.toString()}`;
             window.open(url, '_blank');
             const msg = document.getElementById('topup-order-msg');
             if (msg) msg.textContent = `Creating payment order for ₹${amt.toFixed(2)}...`;
@@ -406,10 +403,8 @@
             const msg = document.getElementById('topup-order-msg');
             if (!(amt > 0)) { showMessage('Enter a valid amount.', 'error'); return; }
             // Open payment order page in a new tab
-            if (window.currentUserId) {
-                document.cookie = `ztrax_user_id=${encodeURIComponent(window.currentUserId)}; Path=/; Max-Age=3600; SameSite=Lax`;
-            }
-            window.open(`create_order.php?amount=${encodeURIComponent(String(amt))}`,'_blank');
+            const params2 = new URLSearchParams({ amount: String(amt), remark1: String(window.currentUserId || ''), remark2: 'topup' });
+            window.open(`create_order.php?${params2.toString()}`,'_blank');
             if (msg) msg.textContent = `Redirected to payment page for ₹${amt.toFixed(2)}.`;
         };
 
