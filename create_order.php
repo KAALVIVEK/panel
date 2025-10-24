@@ -38,12 +38,7 @@ $amount = sanitizeAmount($_POST['amount'] ?? $_GET['amount'] ?? null);
 $orderId = generateOrderId();
 $redirectUrlParam = trim((string)($_REQUEST['redirect_url'] ?? ''));
 if ($redirectUrlParam === '' || !filter_var($redirectUrlParam, FILTER_VALIDATE_URL)) {
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    $base = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/\\');
-    if ($base === '') { $base = '/'; }
-    $path = rtrim($base, '/') . '/dashboard.html';
-    $redirectUrlParam = $scheme . '://' . $host . $path;
+    $redirectUrlParam = defined('REDIRECT_URL') ? REDIRECT_URL : '';
 }
 
 // Request to Gateway
