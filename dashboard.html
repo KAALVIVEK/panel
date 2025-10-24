@@ -1487,7 +1487,8 @@
         .sidebar-link.active {
             color: #FF00A6;
             background-color: rgba(255, 0, 166, 0.1);
-            border-left: 4px solid #FF00A6;
+            /* Visual left accent without affecting layout */
+            box-shadow: inset 4px 0 0 0 #FF00A6;
         }
         .custom-select-bg {
             background-color: rgba(255, 255, 255, 0.05);
