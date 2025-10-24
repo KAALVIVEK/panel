@@ -12,6 +12,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/dashboard.php';
 
 header('Content-Type: application/json');
 
@@ -43,16 +44,51 @@ if ($orderId === '' || $status === '') {
     exit;
 }
 
-// Log the event. In production, update your database accordingly.
-logPaymentEvent('webhook.received', [
-    'order_id' => $orderId,
-    'status'   => $status,
-    'amount'   => $amount,
-    'txn_id'   => $txnId,
-]);
-
-// Example: echo back a simple OK for testing
-echo json_encode([
-    'success' => true,
-    'message' => 'Webhook processed',
-]);
+// Process in DB: update payments and credit user on success
+try {
+    $conn = connectDB();
+    ensurePaymentsTables($conn);
+    // Load order
+    $sel = $conn->prepare('SELECT user_id, amount, status FROM payments WHERE order_id = ? LIMIT 1');
+    $sel->bind_param('s', $orderId);
+    $sel->execute();
+    $row = $sel->get_result()->fetch_assoc();
+    $sel->close();
+    if (!$row) {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'Order not found']);
+        logPaymentEvent('webhook.order_not_found', ['order_id' => $orderId]);
+        exit;
+    }
+    // Idempotency
+    if ($row['status'] === 'SUCCESS') {
+        echo json_encode(['success' => true, 'message' => 'Already processed']);
+        exit;
+    }
+    // Update payment record payload and status
+    $payloadJson = $raw;
+    if (strtoupper($status) === 'SUCCESS' || strtoupper($status) === 'TXN_SUCCESS' || strtoupper($status) === 'PAID') {
+        $upd = $conn->prepare('UPDATE payments SET status = "SUCCESS", txn_id = ?, raw_response = ? WHERE order_id = ?');
+        $upd->bind_param('sss', $txnId, $payloadJson, $orderId);
+        $upd->execute();
+        // Credit balance
+        $credit = $conn->prepare('UPDATE users SET balance = balance + ? WHERE user_id = ?');
+        $amt = (float)$row['amount'];
+        $uid = $row['user_id'];
+        $credit->bind_param('ds', $amt, $uid);
+        $credit->execute();
+        logPaymentEvent('webhook.credited', ['order_id' => $orderId, 'user_id' => $uid, 'amount' => $amt]);
+        echo json_encode(['success' => true, 'message' => 'Payment success']);
+    } else {
+        $upd = $conn->prepare('UPDATE payments SET status = "FAILED", txn_id = ?, raw_response = ? WHERE order_id = ?');
+        $upd->bind_param('sss', $txnId, $payloadJson, $orderId);
+        $upd->execute();
+        logPaymentEvent('webhook.failed', ['order_id' => $orderId, 'status' => $status]);
+        echo json_encode(['success' => true, 'message' => 'Payment failed recorded']);
+    }
+    $conn->close();
+} catch (Throwable $e) {
+    http_response_code(500);
+    logPaymentEvent('webhook.error', ['error' => $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'Server error']);
+}

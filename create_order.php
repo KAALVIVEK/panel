@@ -16,6 +16,38 @@ require_once __DIR__ . '/config.php';
 
 header('Content-Type: text/html; charset=UTF-8');
 
+// ----- Minimal DB helpers (isolated from dashboard.php to avoid routing side-effects) -----
+// Keep these in sync with dashboard.php credentials
+define('DB_HOST', 'sql108.ezyro.com');
+define('DB_USER', 'ezyro_40038768');
+define('DB_PASS', '13579780');
+define('DB_NAME', 'ezyro_40038768_vivek');
+
+function co_connectDB(): mysqli {
+    $conn = @new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
+    if ($conn->connect_error) {
+        throw new Exception('DB connect failed: ' . $conn->connect_error);
+    }
+    return $conn;
+}
+
+function co_ensurePaymentsTables(mysqli $conn): void {
+    $conn->query("CREATE TABLE IF NOT EXISTS payments (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        order_id VARCHAR(64) UNIQUE,
+        txn_id VARCHAR(64) NULL,
+        user_id VARCHAR(64) NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'INIT',
+        raw_response MEDIUMTEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    // Best-effort schema upgrades (idempotent)
+    @$conn->query("ALTER TABLE payments ADD COLUMN raw_response MEDIUMTEXT NULL");
+    @$conn->query("ALTER TABLE payments ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
+}
+
 // ----- Helpers -----
 function buildWebhookUrl(): string {
     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
@@ -41,8 +73,33 @@ function sanitizeAmount($value, float $default = 10.00): float {
 
 // ----- Inputs -----
 $amount = sanitizeAmount($_POST['amount'] ?? $_GET['amount'] ?? null);
+$userId = isset($_POST['user_id']) ? (string)$_POST['user_id'] : (isset($_GET['user_id']) ? (string)$_GET['user_id'] : '');
+// allow letters, digits, dash/underscore/dot only
+$userId = preg_replace('/[^A-Za-z0-9._\-]/', '', $userId);
+$userId = $userId !== '' ? $userId : 'ANON';
 $orderId = generateOrderId();
 $webhookUrl = buildWebhookUrl();
+
+// ----- Persist INIT order in DB before calling gateway -----
+try {
+    $db = co_connectDB();
+    co_ensurePaymentsTables($db);
+    $stmt = $db->prepare('INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, "INIT")');
+    if ($stmt) {
+        $amtStr = number_format($amount, 2, '.', '');
+        $stmt->bind_param('ssd', $orderId, $userId, $amount);
+        if (!$stmt->execute()) {
+            throw new Exception('Failed to create local order record.');
+        }
+        $stmt->close();
+    } else {
+        throw new Exception('DB prepare failed.');
+    }
+    $db->close();
+} catch (Throwable $e) {
+    $errorMessage = 'Internal error creating order. Please try again.';
+    logPaymentEvent('create_order.db_error', ['order_id' => $orderId, 'error' => $e->getMessage()]);
+}
 
 // ----- Request to Gateway -----
 $payload = [
