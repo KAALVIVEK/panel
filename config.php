@@ -11,7 +11,13 @@ define('DEFAULT_ROUTE', is_numeric(getenv('DEFAULT_ROUTE')) ? (int)getenv('DEFAU
 define('GATEWAY_REDIRECT_URL', getenv('GATEWAY_REDIRECT_URL') ?: 'https://pay.t-g.xyz/');
 
 function apiUrl(string $path): string {
-    return rtrim(API_BASE_URL, '/') . '/' . ltrim($path, '/');
+    $base = rtrim(API_BASE_URL, '/');
+    $suffix = '/' . ltrim($path, '/');
+    // If base already ends with the requested path, avoid duplicating it
+    if (strlen($base) >= strlen($suffix) && substr($base, -strlen($suffix)) === $suffix) {
+        return $base;
+    }
+    return $base . $suffix;
 }
 
 function logPaymentEvent(string $event, array $data = []): void {
