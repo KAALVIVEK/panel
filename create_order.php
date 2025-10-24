@@ -12,9 +12,6 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/config.php';
-// For DB mapping (order_id -> user_id, amount) used by webhook
-if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
-require_once __DIR__ . '/dashboard.php';
 
 header('Content-Type: text/html; charset=UTF-8');
 
@@ -73,32 +70,6 @@ $response = curl_exec($ch);
 $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
 $curlErr = curl_error($ch);
 curl_close($ch);
-
-// Best-effort: store order mapping (user_id via cookie) for webhook crediting
-try {
-    $userIdParam = '';
-    if (!headers_sent()) {
-        // Parse cookies safely
-        $cookieHeader = $_SERVER['HTTP_COOKIE'] ?? '';
-        if ($cookieHeader !== '') {
-            foreach (explode(';', $cookieHeader) as $pair) {
-                $kv = explode('=', trim($pair), 2);
-                if (count($kv) === 2 && $kv[0] === 'ztrax_user_id') {
-                    $userIdParam = urldecode($kv[1]);
-                    break;
-                }
-            }
-        }
-    }
-    if ($userIdParam !== '') {
-        $conn = connectDB();
-        ensurePaymentsTables($conn);
-        $amtDec = (float)$payload['amount'];
-        $stmt = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'INIT') ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), amount=VALUES(amount)");
-        if ($stmt) { $stmt->bind_param("ssd", $orderId, $userIdParam, $amtDec); $stmt->execute(); $stmt->close(); }
-        $conn->close();
-    }
-} catch (Throwable $e) { /* ignore */ }
 
 // (No DB writes here; keep gateway request minimal and unchanged)
 
