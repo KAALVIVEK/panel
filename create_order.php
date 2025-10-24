@@ -74,9 +74,22 @@ $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
 $curlErr = curl_error($ch);
 curl_close($ch);
 
-// Best-effort: store order mapping (user_id if provided) for webhook crediting
+// Best-effort: store order mapping (user_id via cookie) for webhook crediting
 try {
-    $userIdParam = (string)($_REQUEST['user_id'] ?? $_REQUEST['uid'] ?? '');
+    $userIdParam = '';
+    if (!headers_sent()) {
+        // Parse cookies safely
+        $cookieHeader = $_SERVER['HTTP_COOKIE'] ?? '';
+        if ($cookieHeader !== '') {
+            foreach (explode(';', $cookieHeader) as $pair) {
+                $kv = explode('=', trim($pair), 2);
+                if (count($kv) === 2 && $kv[0] === 'ztrax_user_id') {
+                    $userIdParam = urldecode($kv[1]);
+                    break;
+                }
+            }
+        }
+    }
     if ($userIdParam !== '') {
         $conn = connectDB();
         ensurePaymentsTables($conn);
