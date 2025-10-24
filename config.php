@@ -4,11 +4,11 @@ declare(strict_types=1);
 // Minimal Payment Gateway Configuration (pay.t-g.xyz)
 // Override via environment variables where available
 
-define('USER_TOKEN', getenv('USER_TOKEN') ?: 'YOUR_API_TOKEN_HERE');
-define('API_BASE_URL', getenv('API_BASE_URL') ?: 'https://pay.t-g.xyz');
+define('USER_TOKEN', getenv('USER_TOKEN') ?: 'api-token');
+define('API_BASE_URL', getenv('API_BASE_URL') ?: 'https://pay.t-g.xyz/api/create-order');
 define('DEFAULT_ROUTE', is_numeric(getenv('DEFAULT_ROUTE')) ? (int)getenv('DEFAULT_ROUTE') : 1);
 // Redirect landing used by gateway after payment; caller can override per-request
-define('GATEWAY_REDIRECT_URL', getenv('GATEWAY_REDIRECT_URL') ?: 'https://pay.t-g.xyz/');
+define('GATEWAY_REDIRECT_URL', getenv('GATEWAY_REDIRECT_URL') ?: 'https://puclone.unaux.com/dashboard.html');
 
 function apiUrl(string $path): string {
     $base = rtrim(API_BASE_URL, '/');
