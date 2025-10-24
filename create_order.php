@@ -49,10 +49,6 @@ $form = [
     'order_id'   => $payload['order_id'],
     'amount'     => $payload['amount'],
     'route'      => defined('DEFAULT_ROUTE') ? DEFAULT_ROUTE : 1,
-    // Prefer the gateway to handle success/failure landing; don't bring user back to panel
-    'success_url' => defined('GATEWAY_REDIRECT_URL') ? GATEWAY_REDIRECT_URL : 'https://pay.t-g.xyz/',
-    'cancel_url'  => defined('GATEWAY_REDIRECT_URL') ? GATEWAY_REDIRECT_URL : 'https://pay.t-g.xyz/',
-    'return_url'  => defined('GATEWAY_REDIRECT_URL') ? GATEWAY_REDIRECT_URL : 'https://pay.t-g.xyz/',
 ];
 curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($form));
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
