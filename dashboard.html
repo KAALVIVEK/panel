@@ -1473,13 +1473,27 @@
             50% { transform: scale(1.04); filter: brightness(1.6); }
             100% { transform: scale(1); filter: brightness(1); }
         }
+        /* Normalize list indentation for sidebars */
+        #sidebarList, #mobileSidebarList { list-style: none; padding-left: 0; margin: 0; }
+        
         .sidebar-link {
             transition: all 0.2s;
             position: relative;
             overflow: hidden;
             color: #ccc;
-            /* Keep alignment consistent between active/inactive items */
-            border-left: 4px solid transparent;
+            /* Ensure consistent width and layout */
+            display: flex;
+            width: 100%;
+        }
+        .sidebar-link::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: transparent;
+            border-radius: 2px;
         }
         .sidebar-link:hover {
             color: #00E5FF;
@@ -1488,8 +1502,13 @@
             color: #FF00A6;
             background-color: rgba(255, 0, 166, 0.1);
             /* Visual left accent without affecting layout */
-            box-shadow: inset 4px 0 0 0 #FF00A6;
+            box-shadow: inset 0 0 0 0 transparent;
         }
+        .sidebar-link.active::before {
+            background: #FF00A6;
+        }
+        /* Fixed icon sizing to avoid label jitter */
+        .sidebar-link svg { width: 20px; height: 20px; flex-shrink: 0; }
         .custom-select-bg {
             background-color: rgba(255, 255, 255, 0.05);
             color: #fff;
