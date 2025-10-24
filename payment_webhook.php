@@ -47,13 +47,14 @@ try {
     $ins->close();
 
     // Fetch current status
-    $sel = $conn->prepare('SELECT status FROM payments WHERE order_id = ? LIMIT 1');
+    $sel = $conn->prepare('SELECT status, user_id FROM payments WHERE order_id = ? LIMIT 1');
     $sel->bind_param('s', $orderId);
     $sel->execute();
     $row = $sel->get_result()->fetch_assoc();
     $sel->close();
 
     $current = $row['status'] ?? 'INIT';
+    if ($userId === '' && !empty($row['user_id'])) { $userId = $row['user_id']; }
     if ($current === 'SUCCESS') {
         echo json_encode(['success'=>true, 'message'=>'Already processed']);
         $conn->close();
@@ -66,10 +67,12 @@ try {
         $upd->execute();
         $upd->close();
 
-        $credit = $conn->prepare('UPDATE users SET balance = balance + ? WHERE user_id = ?');
-        $credit->bind_param('ds', $amount, $userId);
-        $credit->execute();
-        $credit->close();
+        if ($userId !== '') {
+            $credit = $conn->prepare('UPDATE users SET balance = balance + ? WHERE user_id = ?');
+            $credit->bind_param('ds', $amount, $userId);
+            $credit->execute();
+            $credit->close();
+        }
     } else {
         $upd = $conn->prepare("UPDATE payments SET status='FAILED' WHERE order_id = ?");
         $upd->bind_param('s', $orderId);

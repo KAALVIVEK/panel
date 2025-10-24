@@ -12,6 +12,9 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/config.php';
+// Load DB helpers without triggering API routing
+if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
+require_once __DIR__ . '/dashboard.php';
 
 header('Content-Type: text/html; charset=UTF-8');
 
@@ -36,6 +39,9 @@ $orderId = generateOrderId();
 // Optional metadata to pass-through (gateway accepts remark1, remark2)
 $remark1 = isset($_REQUEST['remark1']) ? substr(trim((string)$_REQUEST['remark1']), 0, 64) : '';
 $remark2 = isset($_REQUEST['remark2']) ? substr(trim((string)$_REQUEST['remark2']), 0, 64) : '';
+// Try to capture user id for webhook mapping
+$userIdParam = isset($_REQUEST['user_id']) ? trim((string)$_REQUEST['user_id']) : '';
+if ($userIdParam === '') { $userIdParam = $remark1; }
 // Redirect URL (both success and failure should go to your panel)
 $redirectUrlParam = trim((string)($_REQUEST['redirect_url'] ?? ''));
 if ($redirectUrlParam === '' || !filter_var($redirectUrlParam, FILTER_VALIDATE_URL)) {
@@ -81,6 +87,24 @@ $response = curl_exec($ch);
 $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
 $curlErr = curl_error($ch);
 curl_close($ch);
+
+// Store INIT payment row for mapping (if user id known)
+try {
+    if ($userIdParam !== '') {
+        $conn = connectDB();
+        ensurePaymentsTables($conn);
+        $stmt = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'INIT') ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), amount = VALUES(amount)");
+        if ($stmt) {
+            $amtDec = (float)$payload['amount'];
+            $stmt->bind_param("ssd", $orderId, $userIdParam, $amtDec);
+            $stmt->execute();
+            $stmt->close();
+        }
+        $conn->close();
+    }
+} catch (Throwable $e) {
+    // best-effort; ignore
+}
 
 logPaymentEvent('create_order.requested', [
     'order_id' => $orderId,
