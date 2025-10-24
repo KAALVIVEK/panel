@@ -73,7 +73,6 @@ curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($form));
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 curl_setopt($ch, CURLOPT_HTTPHEADER, [
     'Content-Type: application/x-www-form-urlencoded',
-    'Accept: application/json',
 ]);
 $response = curl_exec($ch);
 $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
