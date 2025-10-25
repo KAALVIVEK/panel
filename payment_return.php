@@ -4,7 +4,6 @@
 // ?order_id=...&status=SUCCESS&amount=...&remark1=UID-... (names may vary)
 
 if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
-require_once __DIR__ . '/dashboard.php';
 
 // Return HTML to the browser on GET; do not force JSON
 header_remove('Content-Type');
@@ -26,7 +25,12 @@ try {
     $q = $_GET;
     // Accept local hints embedded in redirect_url
     $orderId = normalize('order_id', $q);
-    if ($orderId === '') { $orderId = trim((string)($q['local_order_id'] ?? '')); }
+    if ($orderId === '') {
+        $lo = trim((string)($q['local_order_id'] ?? ''));
+        // Strip accidental 'payload-' prefix if present
+        if (stripos($lo, 'payload-') === 0) { $lo = trim(substr($lo, 8)); }
+        $orderId = $lo;
+    }
     $status  = strtoupper(normalize('status', $q));
     $amountV = normalize('amount', $q);
     if ($amountV === '' && isset($q['amt'])) { $amountV = (string)$q['amt']; }
