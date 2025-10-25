@@ -11,11 +11,9 @@ RewriteRule ^go/([A-Za-z0-9_-]+)$ go.php?t=$1 [L,QSA]
 
 # Basic headers (Hostinger supports mod_headers)
 <IfModule mod_headers.c>
-  Header always set X-Frame-Options "DENY"
+  Header always set X-Frame-Options "SAMEORIGIN"
   Header always set X-Content-Type-Options "nosniff"
   Header always set Referrer-Policy "no-referrer"
-  # Light CSP to prevent framing and remote scripts; still allow same-origin
-  Header always set Content-Security-Policy "default-src 'self'; frame-ancestors 'none'"
 </IfModule>
 
 # Block access to hidden files and sensitive configs
