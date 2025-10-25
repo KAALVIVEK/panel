@@ -43,7 +43,8 @@ if ($redirectUrlParam === '') {
         $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
         $base = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/\\');
         if ($base === '') { $base = '/'; }
-        return $scheme . '://' . $host . rtrim($base, '/') . '/dashboard.html';
+        // Default redirect back to payment_return.php to reliably credit balance on return
+        return $scheme . '://' . $host . rtrim($base, '/') . '/payment_return.php';
     })();
 }
 
@@ -51,8 +52,8 @@ if ($redirectUrlParam === '') {
 try {
     $add = [ 'local_order_id' => $orderId ];
     if ($remark1 !== '') { $add['uid'] = $remark1; }
-    $amtStr = $payload['amount'];
-    if (is_string($amtStr) && preg_match('/^\d+\.(\d{2})$/', $amtStr)) { $add['amt'] = $amtStr; }
+    $amtStr = number_format($amount, 2, '.', '');
+    $add['amt'] = $amtStr;
     $redirectUrlParam .= (strpos($redirectUrlParam, '?') !== false ? '&' : '?') . http_build_query($add);
 } catch (Throwable $e) { /* ignore */ }
 

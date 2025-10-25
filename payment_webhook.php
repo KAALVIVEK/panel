@@ -38,7 +38,13 @@ try {
             if (!empty($tmp)) { $payload = $tmp; }
         }
     }
-    if (!is_array($payload) || empty($payload)) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid payload']); exit; }
+    if (!is_array($payload) || empty($payload)) {
+        // Always reply 200 to avoid provider disabling webhook; log for diagnostics
+        logPaymentEvent('payment_webhook.invalid_payload', [ 'content_type' => $ctype, 'raw_snippet' => mb_substr((string)$raw, 0, 500) ]);
+        http_response_code(200);
+        echo json_encode(['success'=>false,'message'=>'Invalid payload']);
+        exit;
+    }
 
     // Normalize common field variants
     $orderId = trim((string)($payload['order_id'] ?? $payload['orderId'] ?? $payload['ORDERID'] ?? ''));
@@ -54,12 +60,12 @@ try {
     $status  = strtoupper(trim((string)$statusRaw));
 
     if ($orderId === '' || $status === '') {
-        http_response_code(400);
+        http_response_code(200);
         echo json_encode(['success'=>false,'message'=>'Missing order_id/status']);
         exit;
     }
     if ($status !== 'SUCCESS' && $status !== 'FAILED' && $status !== 'TXN_SUCCESS' && $status !== 'COMPLETED') {
-        http_response_code(400);
+        http_response_code(200);
         echo json_encode(['success'=>false,'message'=>'Invalid status']);
         exit;
     }
@@ -102,16 +108,19 @@ try {
             $credit->execute();
             $credit->close();
         }
+        logPaymentEvent('payment_webhook.result', [ 'order_id'=>$orderId, 'status'=>'SUCCESS', 'user_id'=>$userId, 'amount'=>$amount ]);
     } else {
         $upd = $conn->prepare("UPDATE payments SET status='FAILED' WHERE order_id = ?");
         $upd->bind_param('s', $orderId);
         $upd->execute();
         $upd->close();
+        logPaymentEvent('payment_webhook.result', [ 'order_id'=>$orderId, 'status'=>'FAILED' ]);
     }
 
     echo json_encode(['success'=>true]);
     $conn->close();
 } catch (Throwable $e) {
-    http_response_code(500);
+    logPaymentEvent('payment_webhook.exception', [ 'error' => $e->getMessage() ]);
+    http_response_code(200);
     echo json_encode(['success'=>false,'message'=>'Server error']);
 }
