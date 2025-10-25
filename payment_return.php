@@ -71,13 +71,27 @@ try {
     $amount  = is_numeric($amountV) ? (float)$amountV : 0.0;
     $userId  = normalize('remark1', $q);
     if ($userId === '' && isset($q['uid'])) { $userId = trim((string)$q['uid']); }
+    // Verify our integrity signature when present
+    $ts  = isset($q['ts']) ? (int)$q['ts'] : 0;
+    $sig = isset($q['sig']) ? (string)$q['sig'] : '';
+    $amtStr = number_format($amount, 2, '.', '');
+    $sigOk = ($sig !== '') ? verifyReturnSig($orderId, $amtStr, $userId, $ts, $sig) : true; // allow old links
 
     // Allow byte_order_status override to bypass status requirement when only order_id is present
     $byte = $_GET['byte_order_status'] ?? '';
     if ($orderId === '') { throw new Exception('Missing order_id'); }
+    if (!$sigOk) { throw new Exception('Invalid signature'); }
 
     // Only credit on success-equivalent statuses (or when trusted byte token present)
     $success = ($byte === 'BYTE37091761364125') || in_array($status, ['SUCCESS','TXN_SUCCESS','COMPLETED'], true);
+    // If status missing and signature valid, try server-to-server verify
+    if (!$success) {
+        $gw = verifyGatewayOrderStatus($orderId);
+        if ($gw['ok'] && in_array($gw['status'], ['SUCCESS','TXN_SUCCESS','COMPLETED'], true)) {
+            $success = true;
+            if ($amount <= 0 && is_string($gw['amount'])) { $amount = (float)$gw['amount']; }
+        }
+    }
 
     // Record return event
     logPaymentEvent('payment_return.received', [
