@@ -3,8 +3,41 @@
 // Expected GET params appended by gateway on redirect (example):
 // ?order_id=...&status=SUCCESS&amount=...&remark1=UID-... (names may vary)
 
-if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
-require_once __DIR__ . '/dashboard.php';
+// Use config logger, but avoid including dashboard.php to prevent JSON headers/400s
+require_once __DIR__ . '/config.php';
+
+// Minimal DB credentials (match dashboard.php)
+if (!defined('DB_HOST')) { define('DB_HOST', 'sql108.ezyro.com'); }
+if (!defined('DB_USER')) { define('DB_USER', 'ezyro_40038768'); }
+if (!defined('DB_PASS')) { define('DB_PASS', '13579780'); }
+if (!defined('DB_NAME')) { define('DB_NAME', 'ezyro_40038768_vivek'); }
+
+function connectDB() {
+    $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
+    if ($conn->connect_error) {
+        throw new Exception('Database connection failed: ' . $conn->connect_error);
+    }
+    return $conn;
+}
+
+function ensurePaymentsTables($conn) {
+    $conn->query("CREATE TABLE IF NOT EXISTS payments (
+        id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        order_id VARCHAR(64) UNIQUE,
+        txn_id VARCHAR(64) NULL,
+        user_id VARCHAR(36) NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'INIT',
+        raw_response MEDIUMTEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    // Add missing columns if table existed before
+    $col = $conn->query("SHOW COLUMNS FROM payments LIKE 'raw_response'");
+    if ($col && $col->num_rows === 0) { @$conn->query("ALTER TABLE payments ADD COLUMN raw_response MEDIUMTEXT NULL"); }
+    $col2 = $conn->query("SHOW COLUMNS FROM payments LIKE 'updated_at'");
+    if ($col2 && $col2->num_rows === 0) { @$conn->query("ALTER TABLE payments ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"); }
+}
 
 // Return HTML to the browser on GET; do not force JSON
 header_remove('Content-Type');
@@ -47,7 +80,6 @@ try {
     $success = ($byte === 'BYTE37091761364125') || in_array($status, ['SUCCESS','TXN_SUCCESS','COMPLETED'], true);
 
     // Record return event
-    require_once __DIR__ . '/config.php';
     logPaymentEvent('payment_return.received', [
         'order_id'=>$orderId, 'status'=>$status, 'amount'=>$amount, 'user_id'=>$userId, 'query'=>$q
     ]);
