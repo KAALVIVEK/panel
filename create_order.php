@@ -47,6 +47,15 @@ if ($redirectUrlParam === '') {
     })();
 }
 
+// Append local hints to redirect_url for reliable crediting on return (safe for gateway)
+try {
+    $add = [ 'local_order_id' => $orderId ];
+    if ($remark1 !== '') { $add['uid'] = $remark1; }
+    $amtStr = $payload['amount'];
+    if (is_string($amtStr) && preg_match('/^\d+\.(\d{2})$/', $amtStr)) { $add['amt'] = $amtStr; }
+    $redirectUrlParam .= (strpos($redirectUrlParam, '?') !== false ? '&' : '?') . http_build_query($add);
+} catch (Throwable $e) { /* ignore */ }
+
 // Request to Gateway
 $payload = [
     'order_id' => $orderId,
