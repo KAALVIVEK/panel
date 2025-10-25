@@ -27,3 +27,15 @@ function logPaymentEvent(string $event, array $data = []): void {
     $line .= PHP_EOL;
     @file_put_contents($logFile, $line, FILE_APPEND | LOCK_EX);
 }
+
+// Lightweight helper to quickly check and enable webhook processing via a local flag
+function isWebhookEnabled(): bool {
+    $flagFile = __DIR__ . '/storage/.webhook_enabled';
+    if (!file_exists($flagFile)) {
+        // default to enabled; create file to make state explicit
+        @file_put_contents($flagFile, '1');
+        return true;
+    }
+    $v = trim((string)@file_get_contents($flagFile));
+    return $v === '1' || strcasecmp($v, 'true') === 0 || $v === '';
+}

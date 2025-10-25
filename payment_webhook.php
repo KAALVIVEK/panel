@@ -18,6 +18,13 @@ if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
 require_once __DIR__ . '/dashboard.php'; // reuse DB helpers and ensure tables
 
 try {
+    if (!isWebhookEnabled()) {
+        logPaymentEvent('payment_webhook.disabled', []);
+        http_response_code(200);
+        echo json_encode(['success'=>false,'message'=>'Webhook disabled']);
+        exit;
+    }
+
     $raw = file_get_contents('php://input');
     $ctype = $_SERVER['CONTENT_TYPE'] ?? '';
     $hdrs = function_exists('getallheaders') ? getallheaders() : [];
@@ -120,7 +127,7 @@ try {
     echo json_encode(['success'=>true]);
     $conn->close();
 } catch (Throwable $e) {
-    logPaymentEvent('payment_webhook.exception', [ 'error' => $e->getMessage() ]);
+    logPaymentEvent('payment_webhook.exception', [ 'error' => $e->getMessage(), 'trace' => $e->getTraceAsString() ]);
     http_response_code(200);
     echo json_encode(['success'=>false,'message'=>'Server error']);
 }

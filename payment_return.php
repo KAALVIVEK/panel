@@ -58,14 +58,15 @@ try {
         try {
             $conn = connectDB();
             ensurePaymentsTables($conn);
-            // Read existing amount if not provided
-            $sel = $conn->prepare('SELECT amount,status FROM payments WHERE order_id = ? LIMIT 1');
+            // Read existing amount/status/user if not provided
+            $sel = $conn->prepare('SELECT amount,status,user_id FROM payments WHERE order_id = ? LIMIT 1');
             $sel->bind_param('s', $orderId);
             $sel->execute();
             $row = $sel->get_result()->fetch_assoc();
             $sel->close();
             $dbAmount = isset($row['amount']) ? (float)$row['amount'] : 0.0;
             $useAmount = ($amount > 0 ? $amount : $dbAmount);
+            if ($userId === '' && isset($row['user_id']) && $row['user_id'] !== '') { $userId = (string)$row['user_id']; }
             // As a last resort, try to read amount from payment logs when DB has no mapping
             if ($useAmount <= 0) {
                 require_once __DIR__ . '/config.php';
@@ -87,24 +88,33 @@ try {
                 }
             }
 
-            // Mark success and upsert mapping
-            $ins = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'SUCCESS') ON DUPLICATE KEY UPDATE status='SUCCESS', user_id=IF(VALUES(user_id)<>'' AND user_id='', VALUES(user_id), user_id), amount=IF(VALUES(amount)>0 AND amount=0, VALUES(amount), amount)");
-            $ins->bind_param('ssd', $orderId, $userId, $useAmount);
-            $ins->execute();
-            $ins->close();
+            // Idempotency: skip credit if already marked SUCCESS
+            $already = isset($row['status']) && strtoupper((string)$row['status']) === 'SUCCESS';
+            if (!$already) {
+                // Mark success and upsert mapping
+                $ins = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'SUCCESS') ON DUPLICATE KEY UPDATE status='SUCCESS', user_id=IF(VALUES(user_id)<>'' AND user_id='', VALUES(user_id), user_id), amount=IF(VALUES(amount)>0 AND amount=0, VALUES(amount), amount)");
+                $ins->bind_param('ssd', $orderId, $userId, $useAmount);
+                $ins->execute();
+                $ins->close();
 
-            if ($userId !== '' && $useAmount > 0) {
-                $credit = $conn->prepare('UPDATE users SET balance = balance + ? WHERE user_id = ?');
-                $credit->bind_param('ds', $useAmount, $userId);
-                $credit->execute();
-                $credit->close();
-                $ok = true;
-                $msg = 'Payment successful. Balance credited.';
+                if ($userId !== '' && $useAmount > 0) {
+                    $credit = $conn->prepare('UPDATE users SET balance = balance + ? WHERE user_id = ?');
+                    $credit->bind_param('ds', $useAmount, $userId);
+                    $credit->execute();
+                    $credit->close();
+                    $ok = true;
+                    $msg = 'Payment successful. Balance credited.';
+                } else {
+                    $msg = 'Payment successful, but missing user/amount for credit.';
+                }
             } else {
-                $msg = 'Payment successful, but missing user/amount for credit.';
+                $ok = true;
+                $msg = 'Payment already processed earlier.';
             }
+            logPaymentEvent('payment_return.result', [ 'order_id'=>$orderId, 'ok'=>$ok, 'user_id'=>$userId, 'amount'=>$useAmount, 'already'=>$already ]);
             $conn->close();
         } catch (Throwable $e) {
+            logPaymentEvent('payment_return.exception', [ 'order_id'=>$orderId, 'error'=>$e->getMessage() ]);
             $msg = 'Payment processed, but DB error occurred.';
         }
     }
