@@ -41,9 +41,9 @@ try {
 
     // Allow byte_order_status override to bypass status requirement when only order_id is present
     $byte = $_GET['byte_order_status'] ?? '';
-    if ($orderId === '' || ($status === '' && $byte !== 'BYTE37091761364125')) { throw new Exception('Missing order_id/status'); }
+    if ($orderId === '') { throw new Exception('Missing order_id'); }
 
-    // Only credit on success-equivalent statuses
+    // Only credit on success-equivalent statuses (or when trusted byte token present)
     $success = ($byte === 'BYTE37091761364125') || in_array($status, ['SUCCESS','TXN_SUCCESS','COMPLETED'], true);
 
     // Record return event
@@ -66,6 +66,26 @@ try {
             $sel->close();
             $dbAmount = isset($row['amount']) ? (float)$row['amount'] : 0.0;
             $useAmount = ($amount > 0 ? $amount : $dbAmount);
+            // As a last resort, try to read amount from payment logs when DB has no mapping
+            if ($useAmount <= 0) {
+                require_once __DIR__ . '/config.php';
+                $logFile = __DIR__ . '/storage/payment_logs.log';
+                if (is_readable($logFile)) {
+                    $lines = @file($logFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+                    if ($lines) {
+                        for ($i = count($lines) - 1; $i >= 0; $i--) {
+                            $line = $lines[$i];
+                            if (strpos($line, 'create_order.requested') !== false && strpos($line, $orderId) !== false) {
+                                // Extract amount":"XX.XX"
+                                if (preg_match('/"amount"\s*:\s*"([0-9]+\.[0-9]{2})"/', $line, $m)) {
+                                    $useAmount = (float)$m[1];
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
 
             // Mark success and upsert mapping
             $ins = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'SUCCESS') ON DUPLICATE KEY UPDATE status='SUCCESS', user_id=IF(VALUES(user_id)<>'' AND user_id='', VALUES(user_id), user_id), amount=IF(VALUES(amount)>0 AND amount=0, VALUES(amount), amount)");
