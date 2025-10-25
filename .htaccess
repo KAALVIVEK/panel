@@ -4,6 +4,9 @@ RewriteEngine On
 # Force HTTPS
 RewriteCond %{HTTPS} !=on
 RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+# Pretty link to hide query: /go/<token> -> go.php?t=<token>
+RewriteRule ^go/([A-Za-z0-9_-]+)$ go.php?t=$1 [L,QSA]
 </IfModule>
 
 # Basic headers (Hostinger supports mod_headers)
