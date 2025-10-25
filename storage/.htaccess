@@ -1,5 +1,0 @@
-# Deny direct access to storage
-Require all denied
-<IfModule mod_headers.c>
-  Header always set Cache-Control "no-store"
-</IfModule>

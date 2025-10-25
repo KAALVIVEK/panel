@@ -1,38 +1,24 @@
-# Global hardening
-# Force HTTPS (Hostinger supports mod_rewrite)
+# Minimal Hostinger-friendly security
 <IfModule mod_rewrite.c>
 RewriteEngine On
+# Force HTTPS
 RewriteCond %{HTTPS} !=on
 RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
-  # Block TRACE/TRACK methods
-  RewriteCond %{REQUEST_METHOD} ^(TRACE|TRACK) [NC]
-  RewriteRule .* - [F]
 </IfModule>
 
-# Deny access to sensitive files and dotfiles
-<FilesMatch "(?i)^(composer\.json|composer\.lock|\.env|\.env\..*|\.git|\.hg|\.svn|\.DS_Store|security\.php|security_bootstrap\.php|\.user\.ini|\.htaccess|\.htpasswd)$">
-  Require all denied
-</FilesMatch>
-
-<FilesMatch "^\.">
-  Require all denied
-  Satisfy All
-</FilesMatch>
-
-# Set security headers (duplicate-safe)
+# Basic headers (Hostinger supports mod_headers)
 <IfModule mod_headers.c>
   Header always set X-Frame-Options "DENY"
   Header always set X-Content-Type-Options "nosniff"
   Header always set Referrer-Policy "no-referrer"
-  Header always set X-XSS-Protection "0"
+  # Light CSP to prevent framing and remote scripts; still allow same-origin
   Header always set Content-Security-Policy "default-src 'self'; frame-ancestors 'none'"
-  Header always set Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
-  # HSTS only if HTTPS
-  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" env=HTTPS
-  # Prevent MIME sniffing and caching of dynamic pages
-  FileETag None
-  Header always unset X-Powered-By
 </IfModule>
 
-# Disable directory indexing
+# Block access to hidden files and sensitive configs
+<FilesMatch "(?i)^(\.env|\.git|\.htaccess|\.htpasswd|composer\.json|composer\.lock)$">
+  Require all denied
+</FilesMatch>
+
+# Disable directory listing
 Options -Indexes
