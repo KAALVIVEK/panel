@@ -4,11 +4,19 @@
 RewriteEngine On
 RewriteCond %{HTTPS} !=on
 RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+  # Block TRACE/TRACK methods
+  RewriteCond %{REQUEST_METHOD} ^(TRACE|TRACK) [NC]
+  RewriteRule .* - [F]
 </IfModule>
 
-# Deny access to sensitive files
-<FilesMatch "(?i)^(composer\.json|composer\.lock|\.env|\.env\..*|\.git|\.hg|\.svn|\.DS_Store|security\.php|security_bootstrap\.php|\.user\.ini)$">
+# Deny access to sensitive files and dotfiles
+<FilesMatch "(?i)^(composer\.json|composer\.lock|\.env|\.env\..*|\.git|\.hg|\.svn|\.DS_Store|security\.php|security_bootstrap\.php|\.user\.ini|\.htaccess|\.htpasswd)$">
   Require all denied
+</FilesMatch>
+
+<FilesMatch "^\.">
+  Require all denied
+  Satisfy All
 </FilesMatch>
 
 # Set security headers (duplicate-safe)
@@ -21,6 +29,9 @@ RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
   Header always set Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
   # HSTS only if HTTPS
   Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" env=HTTPS
+  # Prevent MIME sniffing and caching of dynamic pages
+  FileETag None
+  Header always unset X-Powered-By
 </IfModule>
 
 # Disable directory indexing
