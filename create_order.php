@@ -161,6 +161,17 @@ if ($errorMessage !== null) {
         'order_id' => $orderId,
         'payment_url' => $paymentUrl,
     ]);
+    // Best-effort: store mapping for return-credit (does not affect gateway request)
+    try {
+        if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
+        require_once __DIR__ . '/dashboard.php';
+        $conn = connectDB();
+        ensurePaymentsTables($conn);
+        $amtDec = (float)$payload['amount'];
+        $stmt = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'INIT') ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), amount=VALUES(amount)");
+        if ($stmt) { $stmt->bind_param("ssd", $orderId, $remark1, $amtDec); $stmt->execute(); $stmt->close(); }
+        $conn->close();
+    } catch (Throwable $e) { /* ignore */ }
 }
 
 $pageTitle = 'Create Payment Order';
