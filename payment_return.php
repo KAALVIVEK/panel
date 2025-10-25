@@ -3,9 +3,8 @@
 // Expected GET params appended by gateway on redirect (example):
 // ?order_id=...&status=SUCCESS&amount=...&remark1=UID-... (names may vary)
 
+if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
 require_once __DIR__ . '/dashboard.php';
-
-define('DASHBOARD_LIB_ONLY', true);
 
 header('Content-Type: text/html; charset=UTF-8');
 
