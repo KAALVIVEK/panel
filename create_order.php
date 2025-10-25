@@ -5,14 +5,18 @@ declare(strict_types=1);
  * Create Payment Order (Minimal Integration)
  * - Generates a unique order_id automatically
  * - Accepts an amount via GET/POST (?amount=)
- * - Calls https://pay.t-g.xyz/api/create-order with Authorization header
+ * - Calls https://pay.t-g.xyz/api/create-order
  * - Parses JSON response to retrieve result.payment_url
- * - Displays the payment_url as a clickable link and auto-redirects the user
+ * - Displays the payment_url and auto-redirects
  * - Logs outcomes to storage/payment_logs.log
  */
 
 require_once __DIR__ . '/config.php';
-
+// Load DB helpers in library mode (no API routing)
+if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
+require_once __DIR__ . '/dashboard.php';
+// Ensure HTML response (dashboard.php sets JSON header by default)
+header_remove('Content-Type');
 header('Content-Type: text/html; charset=UTF-8');
 
 function generateOrderId(): string {
@@ -33,7 +37,7 @@ function sanitizeAmount($value, float $default = 10.00): float {
 // Inputs
 $amount = sanitizeAmount($_POST['amount'] ?? $_GET['amount'] ?? null);
 $orderId = generateOrderId();
-// Optional string remarks accepted by gateway
+// Optional string remarks accepted by gateway (use remark1 as user_id hint)
 $remark1 = isset($_REQUEST['remark1']) ? substr((string)$_REQUEST['remark1'], 0, 128) : '';
 $remark2 = isset($_REQUEST['remark2']) ? substr((string)$_REQUEST['remark2'], 0, 128) : '';
 $redirectUrlParam = trim((string)($_REQUEST['redirect_url'] ?? ''));
@@ -43,24 +47,44 @@ if ($redirectUrlParam === '') {
         $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
         $base = rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/\\');
         if ($base === '') { $base = '/'; }
-        return $scheme . '://' . $host . rtrim($base, '/') . '/dashboard.html';
+        // Default fallback (if caller didn't pass redirect_url) → return handler
+        return $scheme . '://' . $host . rtrim($base, '/') . '/payment_return.php';
     })();
 }
 
-// Append local hints to redirect_url for reliable crediting on return (safe for gateway)
-try {
-    $add = [ 'local_order_id' => $orderId ];
-    if ($remark1 !== '') { $add['uid'] = $remark1; }
-    $amtStr = $payload['amount'];
-    if (is_string($amtStr) && preg_match('/^\d+\.(\d{2})$/', $amtStr)) { $add['amt'] = $amtStr; }
-    $redirectUrlParam .= (strpos($redirectUrlParam, '?') !== false ? '&' : '?') . http_build_query($add);
-} catch (Throwable $e) { /* ignore */ }
-
-// Request to Gateway
+// Prepare gateway payload now so we can safely append amount to redirect URL
 $payload = [
     'order_id' => $orderId,
     'amount'   => number_format($amount, 2, '.', ''),
 ];
+
+// Append local hints to redirect_url for reliable crediting on return
+try {
+    $add = [ 'local_order_id' => $orderId ];
+    if ($remark1 !== '') { $add['uid'] = $remark1; }
+    $add['amt'] = $payload['amount'];
+    $redirectUrlParam .= (strpos($redirectUrlParam, '?') !== false ? '&' : '?') . http_build_query($add);
+} catch (Throwable $e) { /* ignore */ }
+
+// Best-effort: upsert INIT payment row for idempotency and bookkeeping
+try {
+    if ($remark1 !== '') {
+        $conn = connectDB();
+        ensurePaymentsTables($conn);
+        $stmt = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'INIT')
+            ON DUPLICATE KEY UPDATE
+              user_id = COALESCE(NULLIF(VALUES(user_id), ''), user_id),
+              amount = IF(VALUES(amount) > 0 AND amount = 0, VALUES(amount), amount)");
+        if ($stmt) {
+            $stmt->bind_param('ssd', $orderId, $remark1, $amount);
+            $stmt->execute();
+            $stmt->close();
+        }
+        $conn->close();
+    }
+} catch (Throwable $e) { /* ignore DB errors */ }
+
+// Request to Gateway
 
 $url = apiUrl('/api/create-order');
 $ch = curl_init($url);
