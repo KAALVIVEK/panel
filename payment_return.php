@@ -77,13 +77,11 @@ try {
     $amtStr = number_format($amount, 2, '.', '');
     $sigOk = ($sig !== '') ? verifyReturnSig($orderId, $amtStr, $userId, $ts, $sig) : true; // allow old links
 
-    // Allow byte_order_status override to bypass status requirement when only order_id is present
-    $byte = $_GET['byte_order_status'] ?? '';
     if ($orderId === '') { throw new Exception('Missing order_id'); }
     if (!$sigOk) { throw new Exception('Invalid signature'); }
 
-    // Only credit on success-equivalent statuses (or when trusted byte token present)
-    $success = ($byte === 'BYTE37091761364125') || in_array($status, ['SUCCESS','TXN_SUCCESS','COMPLETED'], true);
+    // Only credit on success-equivalent statuses
+    $success = in_array($status, ['SUCCESS','TXN_SUCCESS','COMPLETED'], true);
     // If status missing and signature valid, try server-to-server verify
     if (!$success) {
         $gw = verifyGatewayOrderStatus($orderId);

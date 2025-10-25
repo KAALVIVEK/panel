@@ -10,8 +10,9 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/security.php';
 
-header('Content-Type: text/html; charset=UTF-8');
+sec_sendHeaders(['contentType' => 'html']);
 
 function sanitizeAmount($value, float $default = 0.00): float {
     $amount = is_numeric($value) ? (float)$value : $default;
@@ -31,6 +32,10 @@ $errorMessage = null;
 $success = false;
 
 if ($method === 'POST') {
+    if (!sec_csrfValidate($_POST['csrf_token'] ?? '')) {
+        http_response_code(403);
+        $errorMessage = 'Invalid CSRF token.';
+    } else {
     $upiId = sanitizeUpiId($_POST['upi_id'] ?? '');
     $amount = sanitizeAmount($_POST['amount'] ?? null);
     $note = trim((string)($_POST['note'] ?? 'User payout'));
@@ -98,6 +103,7 @@ if ($method === 'POST') {
             ]);
         }
     }
+    }
 }
 
 $pageTitle = 'Send UPI Payout';
@@ -125,6 +131,7 @@ $pageTitle = 'Send UPI Payout';
     <h2><?php echo htmlspecialchars($pageTitle, ENT_QUOTES); ?></h2>
 
     <form method="post" action="">
+      <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(sec_csrfToken(), ENT_QUOTES); ?>">
       <label for="upi_id">UPI ID</label>
       <input type="text" id="upi_id" name="upi_id" placeholder="example@upi" required value="<?php echo htmlspecialchars($_POST['upi_id'] ?? '', ENT_QUOTES); ?>">
 

@@ -12,8 +12,9 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/security.php';
 
-header('Content-Type: text/html; charset=UTF-8');
+sec_sendHeaders(['contentType' => 'html']);
 
 function generateOrderId(): string {
     try {
@@ -30,7 +31,14 @@ function sanitizeAmount($value, float $default = 10.00): float {
     return round($amount, 2);
 }
 
-// Inputs
+// Inputs + CSRF check for POST
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    if (!sec_csrfValidate($_POST['csrf_token'] ?? '')) {
+        http_response_code(403);
+        echo 'Invalid CSRF token';
+        exit;
+    }
+}
 $amount = sanitizeAmount($_POST['amount'] ?? $_GET['amount'] ?? null);
 $orderId = generateOrderId();
 // Optional string remarks accepted by gateway
@@ -171,6 +179,12 @@ $pageTitle = 'Create Payment Order';
         <strong>Unable to create the payment order.</strong>
         <div class="muted">Reason: <?php echo htmlspecialchars($errorMessage ?? 'Unknown error', ENT_QUOTES); ?></div>
       </div>
+      <form method="post" style="margin-top:10px">
+        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(sec_csrfToken(), ENT_QUOTES); ?>">
+        <label>Amount (₹)</label>
+        <input type="number" step="0.01" min="1" name="amount" value="<?php echo htmlspecialchars(number_format($amount, 2, '.', ''), ENT_QUOTES); ?>">
+        <button type="submit">Retry</button>
+      </form>
       <?php if (isset($parsed) && is_array($parsed)): ?>
         <details style="margin-top:8px">
           <summary>Gateway response</summary>

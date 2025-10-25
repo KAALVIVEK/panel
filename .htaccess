@@ -1,0 +1,27 @@
+# Global hardening
+# Force HTTPS (Hostinger supports mod_rewrite)
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteCond %{HTTPS} !=on
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+</IfModule>
+
+# Deny access to sensitive files
+<FilesMatch "(?i)^(composer\.json|composer\.lock|\.env|\.env\..*|\.git|\.hg|\.svn|\.DS_Store|security\.php|security_bootstrap\.php|\.user\.ini)$">
+  Require all denied
+</FilesMatch>
+
+# Set security headers (duplicate-safe)
+<IfModule mod_headers.c>
+  Header always set X-Frame-Options "DENY"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "no-referrer"
+  Header always set X-XSS-Protection "0"
+  Header always set Content-Security-Policy "default-src 'self'; frame-ancestors 'none'"
+  Header always set Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+  # HSTS only if HTTPS
+  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" env=HTTPS
+</IfModule>
+
+# Disable directory indexing
+Options -Indexes
