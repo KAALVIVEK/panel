@@ -11,6 +11,8 @@ if (!defined('LINK_SECRET')) {
 // Only these relative paths can be targeted by /go links
 if (!defined('LINK_ALLOWED_PATHS')) {
   define('LINK_ALLOWED_PATHS', [
+    '/ztrax/index.html',
+    '/index.html',
     '/ztrax/dashboard.html',
     '/dashboard.html',
     '/ztrax/create_order.php',
