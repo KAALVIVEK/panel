@@ -3,10 +3,16 @@
 // ZTRAX DASHBOARD API - SECURE PHP BACKEND
 // =========================================================================
 
-require_once __DIR__ . '/config.php';
-sendSecurityHeaders(['contentType' => 'json', 'cspApi' => true]);
-corsAllowOrigin(['POST','GET','OPTIONS'], ['Content-Type','Authorization']);
-if (handleCorsPreflight(['POST','GET','OPTIONS'], ['Content-Type','Authorization'])) { exit; }
+// Set headers for CORS and JSON response
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header("Content-Type: application/json; charset=UTF-8");
+
+// Handle preflight OPTIONS request
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    exit(0);
+}
 
 // --- 1. DATABASE CONFIGURATION (LIVE CREDENTIALS) ---
 define('DB_HOST', 'sql108.ezyro.com');

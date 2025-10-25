@@ -5,11 +5,11 @@
 // SECURITY NOTE: This script uses Prepared Statements and password hashing
 // to prevent SQL Injection and protect user credentials.
 // =========================================================================
-
-require_once __DIR__ . '/config.php';
-sendSecurityHeaders(['contentType' => 'json', 'cspApi' => true]);
-corsAllowOrigin(['POST'], ['Content-Type', 'Authorization', 'X-Requested-With']);
-if (handleCorsPreflight(['POST'], ['Content-Type', 'Authorization', 'X-Requested-With'])) { exit; }
+header("Content-Type: application/json; charset=UTF-8");
+header("Access-Control-Allow-Origin: *"); // Allow access from your frontend URL
+header("Access-Control-Allow-Methods: POST");
+header("Access-Control-Max-Age: 3600");
+header("Access-Control-Allow-Headers: Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With");
 
 // --- 1. Database Configuration (MUST BE UPDATED) ---
 define('DB_HOST', 'sql108.ezyro.com');
@@ -49,8 +49,6 @@ function ensureAuthTables($conn) {
 }
 
 // --- 2. Input Handling and Routing ---
-// Basic DoS protection per IP + action
-$clientIp = getClientIp();
 $input_json = file_get_contents('php://input');
 $input_data = json_decode($input_json, true);
 
@@ -61,15 +59,6 @@ if (!isset($input_data['action'])) {
 }
 
 $action = $input_data['action'];
-// Rate limit login/register by IP
-if (in_array($action, ['login_user','register_user'], true)) {
-    $rlKey = 'auth:' . $action . ':' . $clientIp;
-    if (!rateLimit($rlKey, 10, 60)) { // max 10 per minute per IP
-        http_response_code(429);
-        echo json_encode(["success" => false, "message" => "Too many attempts. Please try again later."]);
-        exit;
-    }
-}
 
 try {
     $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
