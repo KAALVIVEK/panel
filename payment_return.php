@@ -4,6 +4,7 @@
 // ?order_id=...&status=SUCCESS&amount=...&remark1=UID-... (names may vary)
 
 if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
+require_once __DIR__ . '/dashboard.php';
 
 // Return HTML to the browser on GET; do not force JSON
 header_remove('Content-Type');
@@ -54,34 +55,38 @@ try {
     $msg = 'Payment failed or cancelled.';
     $ok  = false;
     if ($success) {
-        $conn = connectDB();
-        ensurePaymentsTables($conn);
-        // Read or create payment row; prefer stored amount when missing
-        $sel = $conn->prepare('SELECT amount,status FROM payments WHERE order_id = ? LIMIT 1');
-        $sel->bind_param('s', $orderId);
-        $sel->execute();
-        $row = $sel->get_result()->fetch_assoc();
-        $sel->close();
-        $dbAmount = isset($row['amount']) ? (float)$row['amount'] : 0.0;
-        $useAmount = ($amount > 0 ? $amount : $dbAmount);
+        try {
+            $conn = connectDB();
+            ensurePaymentsTables($conn);
+            // Read existing amount if not provided
+            $sel = $conn->prepare('SELECT amount,status FROM payments WHERE order_id = ? LIMIT 1');
+            $sel->bind_param('s', $orderId);
+            $sel->execute();
+            $row = $sel->get_result()->fetch_assoc();
+            $sel->close();
+            $dbAmount = isset($row['amount']) ? (float)$row['amount'] : 0.0;
+            $useAmount = ($amount > 0 ? $amount : $dbAmount);
 
-        // Mark success and upsert mapping
-        $ins = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'SUCCESS') ON DUPLICATE KEY UPDATE status='SUCCESS', user_id=IF(VALUES(user_id)<>'' AND user_id='', VALUES(user_id), user_id), amount=IF(VALUES(amount)>0 AND amount=0, VALUES(amount), amount)");
-        $ins->bind_param('ssd', $orderId, $userId, $useAmount);
-        $ins->execute();
-        $ins->close();
+            // Mark success and upsert mapping
+            $ins = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'SUCCESS') ON DUPLICATE KEY UPDATE status='SUCCESS', user_id=IF(VALUES(user_id)<>'' AND user_id='', VALUES(user_id), user_id), amount=IF(VALUES(amount)>0 AND amount=0, VALUES(amount), amount)");
+            $ins->bind_param('ssd', $orderId, $userId, $useAmount);
+            $ins->execute();
+            $ins->close();
 
-        if ($userId !== '' && $useAmount > 0) {
-            $credit = $conn->prepare('UPDATE users SET balance = balance + ? WHERE user_id = ?');
-            $credit->bind_param('ds', $useAmount, $userId);
-            $credit->execute();
-            $credit->close();
-            $ok = true;
-            $msg = 'Payment successful. Balance credited.';
-        } else {
-            $msg = 'Payment successful, but missing user/amount for credit.';
+            if ($userId !== '' && $useAmount > 0) {
+                $credit = $conn->prepare('UPDATE users SET balance = balance + ? WHERE user_id = ?');
+                $credit->bind_param('ds', $useAmount, $userId);
+                $credit->execute();
+                $credit->close();
+                $ok = true;
+                $msg = 'Payment successful. Balance credited.';
+            } else {
+                $msg = 'Payment successful, but missing user/amount for credit.';
+            }
+            $conn->close();
+        } catch (Throwable $e) {
+            $msg = 'Payment processed, but DB error occurred.';
         }
-        $conn->close();
     }
 
     // Redirect back to dashboard with status message
