@@ -28,18 +28,29 @@ try {
         'headers' => $hdrs,
     ]);
     $payload = json_decode($raw, true);
-    if (!is_array($payload)) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid JSON']); exit; }
+    // Fallbacks for gateways that POST form-encoded instead of JSON
+    if (!is_array($payload) || empty($payload)) {
+        if (!empty($_POST)) {
+            $payload = $_POST;
+        } else {
+            $tmp = [];
+            parse_str((string)$raw, $tmp);
+            if (!empty($tmp)) { $payload = $tmp; }
+        }
+    }
+    if (!is_array($payload) || empty($payload)) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid payload']); exit; }
 
-    $orderId = trim((string)($payload['order_id'] ?? ''));
+    // Normalize common field variants
+    $orderId = trim((string)($payload['order_id'] ?? $payload['orderId'] ?? $payload['ORDERID'] ?? ''));
     $userId  = trim((string)($payload['user_id'] ?? ''));
     // Fallback to remark1/remark2 for user id when not provided explicitly
     if ($userId === '') {
-        $userId = trim((string)($payload['remark1'] ?? '')) ?: trim((string)($payload['remark2'] ?? ''));
+        $userId = trim((string)($payload['remark1'] ?? $payload['REMARK1'] ?? '')) ?: trim((string)($payload['remark2'] ?? $payload['REMARK2'] ?? ''));
     }
     // Accept alternative field names commonly used by gateways
-    $amountRaw = $payload['amount'] ?? ($payload['txn_amount'] ?? $payload['TXNAMOUNT'] ?? null);
+    $amountRaw = $payload['amount'] ?? ($payload['txn_amount'] ?? $payload['TXNAMOUNT'] ?? $payload['txnAmount'] ?? $payload['AMOUNT'] ?? null);
     $amount  = is_numeric($amountRaw) ? (float)$amountRaw : 0.0;
-    $statusRaw = $payload['status'] ?? ($payload['STATUS'] ?? '');
+    $statusRaw = $payload['status'] ?? ($payload['STATUS'] ?? $payload['orderStatus'] ?? '');
     $status  = strtoupper(trim((string)$statusRaw));
 
     if ($orderId === '' || $status === '') {
