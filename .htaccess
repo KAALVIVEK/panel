@@ -5,8 +5,10 @@ RewriteEngine On
 RewriteCond %{HTTPS} !=on
 RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
 
-# Pretty link to hide query: /go/<token> -> go.php?t=<token>
-RewriteRule ^go/([A-Za-z0-9_-]+)$ go.php?t=$1 [L,QSA]
+# Pretty links to hide query: /go/<token> or /ztrax/go/<token>
+# Allow dot in token (base64url has '.')
+RewriteRule ^go/([A-Za-z0-9._-]+)$ go.php?t=$1 [L,QSA]
+RewriteRule ^ztrax/go/([A-Za-z0-9._-]+)$ go.php?t=$1 [L,QSA]
 </IfModule>
 
 # Basic headers (Hostinger supports mod_headers)
