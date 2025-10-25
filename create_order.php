@@ -12,9 +12,6 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/config.php';
-// Use DB helpers for order mapping; routing disabled
-if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
-require_once __DIR__ . '/dashboard.php';
 
 header('Content-Type: text/html; charset=UTF-8');
 
@@ -56,21 +53,7 @@ $payload = [
     'amount'   => number_format($amount, 2, '.', ''),
 ];
 
-// Store mapping for webhook crediting (order_id -> user_id via remark1)
-try {
-    $conn = connectDB();
-    ensurePaymentsTables($conn);
-    $stmt = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status) VALUES (?, ?, ?, 'INIT') ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), amount=VALUES(amount)");
-    if ($stmt) {
-        $amtDec = (float)$payload['amount'];
-        $stmt->bind_param("ssd", $orderId, $remark1, $amtDec);
-        $stmt->execute();
-        $stmt->close();
-    }
-    $conn->close();
-} catch (Throwable $e) {
-    // best-effort only
-}
+// (No DB writes here; keep gateway request minimal and unchanged)
 
 // Build endpoint using base URL helper (reverted to working form)
 $url = apiUrl('/api/create-order');
