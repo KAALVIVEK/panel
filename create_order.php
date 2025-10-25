@@ -47,6 +47,17 @@ if ($redirectUrlParam === '') {
     })();
 }
 
+// Enrich redirect URL with local hints so return handler can credit without webhook
+// (Does not change the set of fields sent to the gateway; only the redirect_url value)
+try {
+    $add = [
+        'local_order_id' => $orderId,
+        'uid' => $remark1,
+        'amt' => $payload['amount'],
+    ];
+    $redirectUrlParam .= (strpos($redirectUrlParam, '?') !== false ? '&' : '?') . http_build_query($add);
+} catch (Throwable $e) { /* ignore */ }
+
 // Request to Gateway
 $payload = [
     'order_id' => $orderId,

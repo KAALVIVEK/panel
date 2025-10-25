@@ -24,11 +24,15 @@ function normalize($key, $arr) {
 
 try {
     $q = $_GET;
+    // Accept local hints embedded in redirect_url
     $orderId = normalize('order_id', $q);
+    if ($orderId === '') { $orderId = trim((string)($q['local_order_id'] ?? '')); }
     $status  = strtoupper(normalize('status', $q));
     $amountV = normalize('amount', $q);
+    if ($amountV === '' && isset($q['amt'])) { $amountV = (string)$q['amt']; }
     $amount  = is_numeric($amountV) ? (float)$amountV : 0.0;
     $userId  = normalize('remark1', $q);
+    if ($userId === '' && isset($q['uid'])) { $userId = trim((string)$q['uid']); }
 
     // Allow byte_order_status override to bypass status requirement when only order_id is present
     $byte = $_GET['byte_order_status'] ?? '';
