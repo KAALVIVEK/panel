@@ -12,6 +12,7 @@ if (!defined('LINK_SECRET')) {
 if (!defined('LINK_ALLOWED_PATHS')) {
   define('LINK_ALLOWED_PATHS', [
     '/ztrax/dashboard.html',
+    '/dashboard.html',
     '/ztrax/create_order.php',
     '/payment_return.php',
   ]);
