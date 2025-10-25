@@ -6,6 +6,9 @@
 
 declare(strict_types=1);
 
+// Load shared config (secret, allowed paths)
+@require_once __DIR__ . '/link_config.php';
+
 function b64u_decode(string $s): string { $s = strtr($s, '-_', '+/'); return base64_decode($s . str_repeat('=', (4 - strlen($s) % 4) % 4)); }
 function b64u_encode(string $s): string { return rtrim(strtr(base64_encode($s), '+/', '-_'), '='); }
 
@@ -21,7 +24,7 @@ $payloadRaw = b64u_decode($p);
 $payload = json_decode($payloadRaw, true);
 if (!is_array($payload)) { http_response_code(404); echo 'Bad token'; exit; }
 
-$secret = getenv('LINK_SECRET') ?: 'CHANGE_ME_TO_LONG_RANDOM';
+$secret = defined('LINK_SECRET') ? LINK_SECRET : (getenv('LINK_SECRET') ?: 'CHANGE_ME_TO_LONG_RANDOM');
 $expected = hash_hmac('sha256', $payloadRaw, $secret, true);
 if (!hash_equals($expected, b64u_decode($sig))) { http_response_code(404); echo 'Bad token'; exit; }
 
@@ -31,7 +34,7 @@ if ($exp > 0 && time() > $exp) { http_response_code(410); echo 'Link expired'; e
 $path = (string)($payload['path'] ?? '');
 $qs = (string)($payload['qs'] ?? '');
 // Allowlist target paths to prevent open redirect
-$allowed = [
+$allowed = defined('LINK_ALLOWED_PATHS') && is_array(LINK_ALLOWED_PATHS) ? LINK_ALLOWED_PATHS : [
   '/ztrax/dashboard.html',
   '/ztrax/create_order.php',
   '/payment_return.php',
