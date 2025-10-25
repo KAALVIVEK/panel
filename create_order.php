@@ -51,7 +51,8 @@ if ($redirectUrlParam === '') {
 try {
     $add = [ 'local_order_id' => $orderId ];
     if ($remark1 !== '') { $add['uid'] = $remark1; }
-    $amtStr = $payload['amount'];
+    // Use already-sanitized $amount to avoid undefined variable warnings
+    $amtStr = number_format($amount, 2, '.', '');
     if (is_string($amtStr) && preg_match('/^\d+\.(\d{2})$/', $amtStr)) { $add['amt'] = $amtStr; }
     $redirectUrlParam .= (strpos($redirectUrlParam, '?') !== false ? '&' : '?') . http_build_query($add);
 } catch (Throwable $e) { /* ignore */ }
