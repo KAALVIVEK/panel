@@ -12,12 +12,21 @@ header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit; }
 
+require_once __DIR__ . '/config.php';
 // Load DB helpers without triggering API routing
 if (!defined('DASHBOARD_LIB_ONLY')) { define('DASHBOARD_LIB_ONLY', true); }
 require_once __DIR__ . '/dashboard.php'; // reuse DB helpers and ensure tables
 
 try {
     $raw = file_get_contents('php://input');
+    $ctype = $_SERVER['CONTENT_TYPE'] ?? '';
+    $hdrs = function_exists('getallheaders') ? getallheaders() : [];
+    logPaymentEvent('payment_webhook.received', [
+        'content_type' => $ctype,
+        'len' => strlen((string)$raw),
+        'raw_snippet' => mb_substr((string)$raw, 0, 2000),
+        'headers' => $hdrs,
+    ]);
     $payload = json_decode($raw, true);
     if (!is_array($payload)) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid JSON']); exit; }
 
@@ -38,7 +47,7 @@ try {
         echo json_encode(['success'=>false,'message'=>'Missing order_id/status']);
         exit;
     }
-    if ($status !== 'SUCCESS' && $status !== 'FAILED') {
+    if ($status !== 'SUCCESS' && $status !== 'FAILED' && $status !== 'TXN_SUCCESS' && $status !== 'COMPLETED') {
         http_response_code(400);
         echo json_encode(['success'=>false,'message'=>'Invalid status']);
         exit;
@@ -48,8 +57,8 @@ try {
     ensurePaymentsTables($conn);
 
     // Upsert payment record and credit on SUCCESS (idempotent)
-    // Create row if not exists
-    $ins = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status, raw_response) VALUES (?, ?, ?, 'INIT', ?) ON DUPLICATE KEY UPDATE raw_response = VALUES(raw_response)");
+    // Create row if not exists, preserve earliest known user_id/amount when missing in payload
+    $ins = $conn->prepare("INSERT INTO payments (order_id, user_id, amount, status, raw_response) VALUES (?, ?, ?, 'INIT', ?) ON DUPLICATE KEY UPDATE raw_response = VALUES(raw_response), user_id = IF(VALUES(user_id)<>'' AND user_id='', VALUES(user_id), user_id), amount = IF(VALUES(amount)>0 AND amount=0, VALUES(amount), amount)");
     $ins->bind_param('ssds', $orderId, $userId, $amount, $raw);
     $ins->execute();
     $ins->close();
